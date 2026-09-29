@@ -405,3 +405,43 @@ void set_active_output(device_t *state, uint8_t new_output) {
        Changing outputs = no more keypresses on the previous system. */
     release_all_keys(state);
 }
+
+/* ==================================================== *
+ * ============  Layout Profile Routines  ============== *
+ * ==================================================== */
+
+/* Apply a layout profile by swapping the screen counts of the two outputs.
+   HOST:   side display owned by A -> {A:2, B:1}, vertical A/B border
+   LAPTOP: side display owned by B -> {A:1, B:2}, horizontal A/B border
+   Both outputs return to their main screen. This is RAM-only state,
+   intentionally not stored in config_t (flash layout stays compatible). */
+void apply_layout_profile(device_t *state, uint8_t profile) {
+    state->layout_profile = profile;
+
+    for (int i = 0; i < NUM_SCREENS; i++) {
+        output_t *output = &state->config.output[i];
+        output->screen_count = (i == OUTPUT_A) ? 2 - profile : 1 + profile;
+        output->screen_index = 1;
+    }
+
+    state->relative_mouse = false;
+}
+
+/* Right Ctrl + M means "I just pressed the KVM button": flip the layout
+   profile and move the input to the side display's new owner (v2.1). */
+void layout_toggle_hotkey_handler(device_t *state, hid_keyboard_report_t *report) {
+    uint8_t new_profile = state->layout_profile ^ 1;
+
+    apply_layout_profile(state, new_profile);
+
+    /* The side display belongs to output A in the HOST profile, to output B in LAPTOP */
+    set_active_output(state, (new_profile == LAYOUT_PROFILE_HOST) ? OUTPUT_A : OUTPUT_B);
+
+    /* Keep the other board in sync */
+    send_value(new_profile, LAYOUT_SELECT_MSG);
+}
+
+/* The other board toggled the layout profile, apply the same transform here */
+void handle_layout_select_msg(uart_packet_t *packet, device_t *state) {
+    apply_layout_profile(state, packet->data[0]);
+}

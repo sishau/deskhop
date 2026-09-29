@@ -24,6 +24,7 @@ void enable_screensaver_pong_hotkey_handler(device_t *, hid_keyboard_report_t *)
 void enable_screensaver_jitter_hotkey_handler(device_t *, hid_keyboard_report_t *);
 void fw_upgrade_hotkey_handler_A(device_t *, hid_keyboard_report_t *);
 void fw_upgrade_hotkey_handler_B(device_t *, hid_keyboard_report_t *);
+void layout_toggle_hotkey_handler(device_t *, hid_keyboard_report_t *);
 void mouse_zoom_hotkey_handler(device_t *, hid_keyboard_report_t *);
 void output_config_hotkey_handler(device_t *, hid_keyboard_report_t *);
 void output_toggle_hotkey_handler(device_t *, hid_keyboard_report_t *);
@@ -46,6 +47,7 @@ void handle_fw_upgrade_msg(uart_packet_t *, device_t *);
 void handle_toggle_gaming_msg(uart_packet_t *, device_t *);
 void handle_heartbeat_msg(uart_packet_t *, device_t *);
 void handle_keyboard_uart_msg(uart_packet_t *, device_t *);
+void handle_layout_select_msg(uart_packet_t *, device_t *);
 void handle_mouse_abs_uart_msg(uart_packet_t *, device_t *);
 void handle_mouse_zoom_msg(uart_packet_t *, device_t *);
 void handle_output_select_msg(uart_packet_t *, device_t *);
@@ -67,4 +69,5 @@ void handle_write_fw_msg(uart_packet_t *, device_t *);
  *  Functions related to managing the active output.
  *==============================================================================*/
 
+void apply_layout_profile(device_t *, uint8_t);
 void set_active_output(device_t *, uint8_t);

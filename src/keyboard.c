@@ -45,6 +45,13 @@ hotkey_combo_t hotkeys[] = {
      .acknowledge    = true,
      .action_handler = &screenlock_hotkey_handler},
 
+    /* Toggle layout profile and follow the side display's new owner (v2.1) */
+    {.modifier       = KEYBOARD_MODIFIER_RIGHTCTRL,
+     .keys           = {HID_KEY_M},
+     .key_count      = 1,
+     .acknowledge    = true,
+     .action_handler = &layout_toggle_hotkey_handler},
+
     /* Toggle gaming mode */
     {.modifier       = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_RIGHTSHIFT,
      .keys           = {HID_KEY_G},

@@ -147,6 +147,7 @@ typedef struct {
     bool onboard_led_state;  // True when LED is ON
     bool relative_mouse;     // True when relative mouse mode is used
     bool gaming_mode;        // True when gaming mode is on (relative passthru + lock)
+    uint8_t layout_profile;  // Active layout profile (enum layout_profile_e), RAM only, never stored in flash
     bool config_mode_active; // True when config mode is active
     bool digitizer_active;   // True when digitizer Win/Mac workaround is active
 
@@ -177,6 +178,19 @@ enum screen_pos_e {
     LEFT   = 1,
     RIGHT  = 2,
     MIDDLE = 3,
+    /* Vertical directions, used by the layout-profile vertical portal
+       (they are never stored in output_t.pos, only compared against) */
+    TOP    = 4,
+    BOTTOM = 5,
+};
+
+/* Which output owns the (physically shared) side display, defining where the
+   A/B border sits. See docs/screen-layout-proposal.md for the full design.
+   HOST:   side display owned by output A, vertical A/B border   {A:2, B:1}
+   LAPTOP: side display owned by output B, horizontal A/B border {A:1, B:2} */
+enum layout_profile_e {
+    LAYOUT_PROFILE_HOST   = 0,
+    LAYOUT_PROFILE_LAPTOP = 1,
 };
 
 enum screensaver_mode_e {

@@ -51,6 +51,34 @@ enum screen_pos_e is_screen_switch_needed(output_t *output, int position, int of
     return NONE;
 }
 
+/* Vertical-axis counterpart of is_screen_switch_needed. Returns TOP when the
+   pointer would leave through the upper edge, BOTTOM through the lower edge.
+   Threshold policy depends on the layout profile:
+   - HOST:   the vertical border is the cross-PC jump, gated by jump_threshold
+             on the main screen (extra screens have no vertical neighbours)
+   - LAPTOP: the vertical border is an internal screen switch inside output B,
+             which has no gap (same policy as horizontal internal switches) */
+enum screen_pos_e is_vertical_switch_needed(output_t *output, int position, int offset) {
+    /* No position offset implies no switch needed. */
+    if (offset == 0)
+        return NONE;
+
+    uint16_t threshold;
+
+    if (global_state.layout_profile == LAYOUT_PROFILE_HOST)
+        threshold = (output->screen_index == 1) ? global_state.config.jump_threshold : 0;
+    else
+        threshold = 0;
+
+    if (position + offset < MIN_SCREEN_COORD - threshold)
+        return TOP;
+
+    if (position + offset > MAX_SCREEN_COORD + threshold)
+        return BOTTOM;
+
+    return NONE;
+}
+
 /* Move mouse coordinate 'position' by 'offset', but don't fall off the screen */
 int32_t move_and_keep_on_screen(int position, int offset) {
     /* Lowest we can go is 0 */
@@ -135,6 +163,10 @@ enum screen_pos_e update_mouse_position(device_t *state, mouse_values_t *values)
     /* Determine if our upcoming movement would stay within the screen */
     enum screen_pos_e switch_direction = is_screen_switch_needed(current, state->pointer_x, offset_x);
 
+    /* The horizontal axis takes precedence; only check Y if X stays on screen */
+    if (switch_direction == NONE)
+        switch_direction = is_vertical_switch_needed(current, state->pointer_y, offset_y);
+
     /* Update movement */
     state->pointer_x = move_and_keep_on_screen(state->pointer_x, offset_x);
     state->pointer_y = move_and_keep_on_screen(state->pointer_y, offset_y);
@@ -202,6 +234,20 @@ void switch_to_another_pc(
     state->pointer_y = scale_y_coordinate(output->number, 1 - output->number, state);
 }
 
+/* Vertical counterpart of switch_to_another_pc: park the hidden pointer on the
+   physical edge we're leaving through, then enter the other PC from the
+   opposite edge. X is kept as-is (no width info, no scaling by design). */
+void switch_to_another_pc_vertical(device_t *state, int output_to, int direction) {
+    mouse_report_t hidden_pointer = {
+        .x = state->pointer_x,
+        .y = (direction == BOTTOM) ? MAX_SCREEN_COORD : MIN_SCREEN_COORD,
+    };
+
+    output_mouse_report(&hidden_pointer, state);
+    set_active_output(state, output_to);
+    state->pointer_y = (direction == BOTTOM) ? MIN_SCREEN_COORD : MAX_SCREEN_COORD;
+}
+
 void switch_virtual_desktop_macos(device_t *state, int direction) {
     /*
      * Fix for MACOS: Before sending new absolute report setting X to 0:
@@ -257,6 +303,18 @@ void switch_virtual_desktop(device_t *state, output_t *output, int new_index, in
     output->screen_index = new_index;
 }
 
+/* Vertical counterpart of switch_virtual_desktop (internal screen change along
+   the Y axis). The macOS workaround doesn't apply here; Windows switches to
+   the relative HID interface the same way as horizontal desktop changes do. */
+void switch_virtual_desktop_vertical(device_t *state, output_t *output, int new_index, int direction) {
+    if (output->os == WINDOWS)
+        state->relative_mouse = (new_index > 1);
+
+    /* Enter the new screen through the physical edge we crossed */
+    state->pointer_y     = (direction == BOTTOM) ? MIN_SCREEN_COORD : MAX_SCREEN_COORD;
+    output->screen_index = new_index;
+}
+
 /*                               BORDER
                                    |
        .---------.    .---------.  |  .---------.    .---------.    .---------.
@@ -275,20 +333,73 @@ void do_screen_switch(device_t *state, int direction) {
     /* We want to jump in the direction of the other computer */
     if (output->pos != direction) {
         if (output->screen_index == 1) { /* We are at the border -> switch outputs */
+            /* HOST profile: cross-PC switching happens on the vertical A/B
+               border instead, so the horizontal border is a physical dead end */
+            if (state->layout_profile == LAYOUT_PROFILE_HOST)
+                return;
+
             /* No switching allowed if mouse button is held. Should only apply to the border! */
             if (state->mouse_buttons)
                 return;
 
             switch_to_another_pc(state, output, 1 - state->active_output, direction);
         }
-        /* If here, this output has multiple desktops and we are not on the main one */
+        /* If here, this output has multiple desktops and we are not on the main one.
+           In the LAPTOP profile output B's screens are stacked vertically, so its
+           horizontal internal switches correspond to physically non-existent edges */
+        else if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_B)
+            return;
         else
             switch_virtual_desktop(state, output, output->screen_index - 1, direction);
     }
 
     /* We want to jump away from the other computer, only possible if there is another screen to jump to */
-    else if (output->screen_index < output->screen_count)
+    else if (output->screen_index < output->screen_count) {
+        /* Same LAPTOP-profile guard: no physical edge to the left of output B's screens */
+        if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_B)
+            return;
+
         switch_virtual_desktop(state, output, output->screen_index + 1, direction);
+    }
+}
+
+/* Vertical-axis screen switching, driven by the layout profile:
+   - HOST:   the vertical A/B border (A lower edge -> B, B upper edge -> A),
+             both being cross-PC jumps through the side display
+   - LAPTOP: internal screen switch inside output B (its screens are stacked) */
+void do_vertical_switch(device_t *state, int direction) {
+    output_t *output = &state->config.output[state->active_output];
+
+    /* No switching allowed if explicitly disabled or in gaming mode */
+    if (state->switch_lock || state->gaming_mode)
+        return;
+
+    if (state->layout_profile == LAYOUT_PROFILE_HOST) {
+        /* Only the main screen touches the vertical A/B border */
+        if (output->screen_index != 1)
+            return;
+
+        /* No border switching while a mouse button is held, same as horizontal */
+        if (state->mouse_buttons)
+            return;
+
+        if (output->number == OUTPUT_A && direction == BOTTOM)
+            switch_to_another_pc_vertical(state, OUTPUT_B, direction);
+        else if (output->number == OUTPUT_B && direction == TOP)
+            switch_to_another_pc_vertical(state, OUTPUT_A, direction);
+    }
+
+    else {
+        /* Output B's screens are stacked vertically; output A has just one screen */
+        if (output->number != OUTPUT_B)
+            return;
+
+        if (direction == BOTTOM && output->screen_index < output->screen_count)
+            switch_virtual_desktop_vertical(state, output, output->screen_index + 1, direction);
+
+        else if (direction == TOP && output->screen_index > 1)
+            switch_virtual_desktop_vertical(state, output, output->screen_index - 1, direction);
+    }
 }
 
 static inline bool extract_value(bool uses_id, int32_t *dst, report_val_t *src, uint8_t *raw_report, int len) {
@@ -376,9 +487,14 @@ void process_mouse_report(uint8_t *raw_report, int len, uint8_t itf, hid_interfa
     /* Move the mouse, depending where the output is supposed to go */
     output_mouse_report(&report, state);
 
-    /* We use the mouse to switch outputs, if switch_direction is LEFT or RIGHT */
-    if (switch_direction != NONE)
-        do_screen_switch(state, switch_direction);
+    /* We use the mouse to switch outputs: LEFT/RIGHT on the horizontal axis,
+       TOP/BOTTOM through the vertical portal of the active layout profile */
+    if (switch_direction != NONE) {
+        if (switch_direction == LEFT || switch_direction == RIGHT)
+            do_screen_switch(state, switch_direction);
+        else
+            do_vertical_switch(state, switch_direction);
+    }
 }
 
 /* ==================================================== *
