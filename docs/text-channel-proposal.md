@@ -161,3 +161,6 @@ Ctrl+V ◀──写剪贴板──重组校验──HID IN 拉取(阅后即焚)�
    **Ctrl+Alt+U（Upload，推送）/ Ctrl+Alt+D（Download，拉取）**，方向语义
    直白，U/D 在探测中均空闲。注意探测盲区：键盘钩子类热键不可见，以实际
    按键为准；若笔记本端也冲突，改脚本顶部两个常量即可。
+   （2026-09-30 二次变更）：Ctrl+Shift 池探测仅 A/W 被占，S/F 均空闲，最终
+   改定 **Ctrl+Shift+S（Send，推送）/ Ctrl+Shift+F（Fetch，拉取）**。注意
+   浏览器/IDE 的应用内 Ctrl+Shift+S/F（另存为/全局搜索）会被全局热键拦截。

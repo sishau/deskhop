@@ -4,11 +4,11 @@
 ; Transfers a block of text (<= 8191 bytes UTF-8, ~2700 Chinese chars) between
 ; the two machines connected to a DeskHop, via the vendor HID interface.
 ;
-;   Ctrl+Alt+U : push the local clipboard to the OTHER machine (Upload)
-;   Ctrl+Alt+D : pull the buffered text from THIS machine's Pico (Download)
+;   Ctrl+Shift+S : push the local clipboard to the OTHER machine (Send)
+;   Ctrl+Shift+F : pull the buffered text from THIS machine's Pico (Fetch)
 ;
 ; Both machines run the same script. Typical flow: select text on machine A,
-; Ctrl+Alt+U (or copy first), then switch to machine B and press Ctrl+Alt+D.
+; Ctrl+Shift+S (or copy first), then switch to machine B and press Ctrl+Shift+F.
 ; The firmware buffer is single-shot and burns after reading.
 ;
 ; Requires AutoHotkey v1.1 (classic). No driver needed - uses hid.dll.
@@ -21,9 +21,10 @@ SetBatchLines -1
 
 ; ========================= Configuration =========================
 ; 2026-09-30: S/F were taken on the output-A machine (verified by probing
-; RegisterHotKey for all Ctrl+Alt+letter/digit combos); U/D are free there.
-SEND_HOTKEY := "^!u"                  ; Ctrl+Alt+U : push (Upload)
-PULL_HOTKEY := "^!d"                  ; Ctrl+Alt+D : pull (Download)
+; RegisterHotKey for all Ctrl+Alt+letter/digit combos). Ctrl+Shift pool has
+; only A/W busy there, so S/F are free under Ctrl+Shift.
+SEND_HOTKEY := "^+s"                  ; Ctrl+Shift+S : push (Send)
+PULL_HOTKEY := "^+f"                  ; Ctrl+Shift+F : pull (Fetch)
 VID_PID     := "vid_1209&pid_c000"    ; DeskHop normal-mode device, interface MI_02
 REPORT_ID   := 6                      ; REPORT_ID_VENDOR in the firmware
 PKT_LEN     := 12                     ; raw UART-style packet length
@@ -42,7 +43,7 @@ Hotkey, %SEND_HOTKEY%, SendClipboard
 Hotkey, %PULL_HOTKEY%, PullText
 return
 
-; ========================= Push (Ctrl+Alt+U) =========================
+; ========================= Push (Ctrl+Shift+S) =========================
 SendClipboard:
     h := GetHid()
     if (!h) {
@@ -94,7 +95,7 @@ SendClipboard:
     Tip(tipText)
 return
 
-; ========================= Pull (Ctrl+Alt+D) =========================
+; ========================= Pull (Ctrl+Shift+F) =========================
 PullText:
     h := GetHid()
     if (!h) {
