@@ -2,7 +2,10 @@ cmake_minimum_required(VERSION 3.6)
 
 ## Version Configuration.
 ## Define e.g. 0.72 as major 0 and minor 72
-set(VERSION_MAJOR 0)
+# Fork branch (side-display portal v2): major=2 marks the fork, minor keeps
+# the upstream baseline -> 2.80 = "V2 design on top of 0.80" (metadata 2180).
+# Upstream 0.x versions always stay below 2000, so they can never collide.
+set(VERSION_MAJOR 2)
 set(VERSION_MINOR 80)
 
 ## Release Type Selection
