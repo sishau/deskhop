@@ -164,3 +164,9 @@ Ctrl+V ◀──写剪贴板──重组校验──HID IN 拉取(阅后即焚)�
    （2026-09-30 二次变更）：Ctrl+Shift 池探测仅 A/W 被占，S/F 均空闲，最终
    改定 **Ctrl+Shift+S（Send，推送）/ Ctrl+Shift+F（Fetch，拉取）**。注意
    浏览器/IDE 的应用内 Ctrl+Shift+S/F（另存为/全局搜索）会被全局热键拦截。
+   （2026-09-30 三轮定稿）：用户否决字母键位——浏览器/Office 中另存为/查找
+   等应用内快捷键使用频繁，全局热键拦截不可接受。应用内绑定盘点：Ctrl+Shift
+   字母几乎全被浏览器/Office 高频占用；**数字组合零绑定**（浏览器切标签是
+   不带 Shift 的 Ctrl+数字）。最终定稿 **Ctrl+Shift+1 推送 / Ctrl+Shift+2
+   拉取**（全局注册全 FREE 已探测，应用内零冲突）。热键讨论历三轮：
+   Ctrl+Alt+S/F（占）→ Ctrl+Alt+U/D（换）→ Ctrl+Shift+S/F（拦）→ 数字。
