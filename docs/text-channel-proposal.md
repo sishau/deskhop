@@ -156,3 +156,8 @@ Ctrl+V ◀──写剪贴板──重组校验──HID IN 拉取(阅后即焚)�
    （CDC 占用 ITF 2/3）。
 6. **实测开销**：+492B flash（.pad 118,252B）、RAM 151,312B（57.72%）、
    -Ofast 零警告。webconfig（config 模式）行为不变。
+7. **键位变更（2026-09-30）**：S/F 在本机（Output A）已被其他软件注册占用
+   （RegisterHotKey 全量探测证实：A C F L O R S T X Z 1 均被占）。改为
+   **Ctrl+Alt+U（Upload，推送）/ Ctrl+Alt+D（Download，拉取）**，方向语义
+   直白，U/D 在探测中均空闲。注意探测盲区：键盘钩子类热键不可见，以实际
+   按键为准；若笔记本端也冲突，改脚本顶部两个常量即可。
