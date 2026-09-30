@@ -44,6 +44,7 @@
 #include "serial.h"
 #include "setup.h"
 #include "tasks.h"
+#include "text_channel.h"
 #include "watchdog.h"
 
 

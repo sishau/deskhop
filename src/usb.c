@@ -54,7 +54,18 @@ uint16_t tud_hid_get_report_cb(uint8_t instance,
                                hid_report_type_t report_type,
                                uint8_t *buffer,
                                uint16_t request_len) {
-    /* Only the keyboard interface answers GET reports. */
+    /* Vendor interface in normal mode serves the text channel pull side. */
+    if (instance == ITF_NUM_HID_VENDOR) {
+        if (global_state.config_mode_active)
+            return 0;
+
+        if (report_id != REPORT_ID_VENDOR || report_type != HID_REPORT_TYPE_INPUT)
+            return 0;
+
+        return tc_get_report(buffer, request_len);
+    }
+
+    /* Only the keyboard interface answers other GET reports. */
     if (instance != ITF_NUM_HID)
         return 0;
 
@@ -89,22 +100,25 @@ void tud_hid_set_report_cb(uint8_t instance,
 
     /* We received a report on the config report ID */
     if (instance == ITF_NUM_HID_VENDOR && report_id == REPORT_ID_VENDOR) {
-        /* Security - only if config mode is enabled are we allowed to do anything. While the report_id
-           isn't even advertised when not in config mode, security must always be explicit and never assume */
-        if (!global_state.config_mode_active)
-            return;
-
         /* We insist on a fixed size packet. No overflows. */
         if (bufsize != RAW_PACKET_LENGTH)
             return;
 
         uart_packet_t *packet = (uart_packet_t *) (buffer + START_LENGTH);
 
-        /* Only a certain packet types are accepted */
-        if (!validate_packet(packet))
-            return;
+        /* In config mode the vendor interface carries the webconfig protocol,
+           in normal mode its only job is the text channel. While the report_id
+           isn't even advertised when not in config mode, security must always
+           be explicit and never assume. */
+        if (global_state.config_mode_active) {
+            /* Only a certain packet types are accepted */
+            if (!validate_packet(packet))
+                return;
 
-        process_packet(packet, &global_state);
+            process_packet(packet, &global_state);
+        } else {
+            tc_handle_usb_push(packet);
+        }
     }
 
     /* LED reports use REPORT_ID_KEYBOARD, or 0 in boot protocol (no report ID byte). */

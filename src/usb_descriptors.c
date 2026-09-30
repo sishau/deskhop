@@ -62,6 +62,8 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
             return desc_hid_report;
         case ITF_NUM_HID_REL_M:
             return desc_hid_report_relmouse;
+        case ITF_NUM_HID_VENDOR:
+            return desc_hid_report_vendor;
         default:
             return desc_hid_report;
     }
@@ -170,9 +172,9 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 
 #ifndef DH_DEBUG
 
-#define ITF_NUM_TOTAL 2
+#define ITF_NUM_TOTAL 3
 #define ITF_NUM_TOTAL_CONFIG 4
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN)
 #define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN)
 
 #else
@@ -214,6 +216,17 @@ uint8_t const desc_configuration[] = {
                        EPNUM_HID_REL_M,
                        CFG_TUD_HID_EP_BUFSIZE,
                        1),
+#ifndef DH_DEBUG
+    /* Text channel vendor interface (also present in config mode, where the
+       debug CDC takes its place instead - see ITF_NUM_CDC below). */
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_VENDOR,
+                       STRID_VENDOR,
+                       HID_ITF_PROTOCOL_NONE,
+                       sizeof(desc_hid_report_vendor),
+                       EPNUM_HID_VENDOR,
+                       CFG_TUD_HID_EP_BUFSIZE,
+                       1),
+#endif
 #ifdef DH_DEBUG
     // Interface number, string index, EP notification address and size, EP data address (out, in) and size.
     TUD_CDC_DESCRIPTOR(
