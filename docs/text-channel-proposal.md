@@ -135,3 +135,24 @@ Ctrl+V ◀──写剪贴板──重组校验──HID IN 拉取(阅后即焚)�
 - [x] LED"有新文本"提示——**否决**（2026-09-30）
 - [x] 键位定稿：`Ctrl+Alt+S` 推 / `Ctrl+Alt+F` 拉，两端相同（替代 Ctrl+Alt+B，单手工学）
 - [x] AHK 独立运行，不与防锁屏脚本合并
+
+## 9. 实现记录（2026-09-30，commit 17fe504，v0.80.3 = 903）
+
+与本文前述设计的差异以本节为准：
+
+1. **USB report 实际为 12B**（§3.1 的 64B 布局假设作废）。vendor report descriptor
+   为 `TUD_HID_REPORT_DESC_VENDOR_CTRL`：REPORT_COUNT(12)×REPORT_SIZE(8)。线上
+   包 = report_id(1B) + 12B RAW 包；TinyUSB SET_REPORT 剥离 / GET_REPORT 填充
+   report_id，固件回调与 AHK 均按 13B 对齐。
+2. **无 OUT 中断端点**：推送走 SET_REPORT 控制传输（HidD_SetOutputReport），
+   拉取走 GET_REPORT（HidD_GetInputReport），与 AHK 方案一致。
+3. **GET 返回包 data[7] 编码**：`0x80|n`（n=1..7）表示末包携带 n 字节文本，
+   0 表示满 7B 且还有后续（原 bit0-EOF 设计有末包长度歧义，已修正）。
+4. **类型字段**：SET_REPORT 复用 uart_packet_t.type（TC_PUSH_BEGIN=1 /
+   TC_PUSH_DATA=2 / TC_PULL_REQ=3），GET 返回 type=5 数据 / 0xFF 空。
+5. **文件清单落定**（§4 的 8 文件收敛为）：usb_descriptors.c、usb.c、
+   protocol.h、uart.c、main.h、**text_channel.c/h（新建）**、CMakeLists.txt；
+   主机侧 tools/text_channel.ahk。debug 构建的 normal 配置不含 vendor 接口
+   （CDC 占用 ITF 2/3）。
+6. **实测开销**：+492B flash（.pad 118,252B）、RAM 151,312B（57.72%）、
+   -Ofast 零警告。webconfig（config 模式）行为不变。
