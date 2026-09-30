@@ -2,11 +2,11 @@ cmake_minimum_required(VERSION 3.6)
 
 ## Version Configuration.
 ## Define e.g. 0.72 as major 0 and minor 72
-# Fork branch (side-display portal v2): major=2 marks the fork, minor keeps
-# the upstream baseline -> 2.80 = "V2 design on top of 0.80" (metadata 2180).
-# Upstream 0.x versions always stay below 2000, so they can never collide.
-set(VERSION_MAJOR 2)
+# Fork patch releases on top of upstream 0.80: v0.80.1 = V2 portal feature,
+# v0.80.2 = + boot-time layout fix. u16 encoding (see FIRMWARE_VERSION below).
+set(VERSION_MAJOR 0)
 set(VERSION_MINOR 80)
+set(VERSION_PATCH 2)
 
 ## Release Type Selection
 option(DH_DEBUG "Build a debug version" OFF)
@@ -140,8 +140,8 @@ pico_set_linker_script(${binary} ${CMAKE_SOURCE_DIR}/misc/memory_map.ld)
 ## Build other file formats as well
 pico_add_extra_outputs(${binary})
 
-# For internal firmware use, to simplify comparison: 0.72 -> 172
-math(EXPR FIRMWARE_VERSION "${VERSION_MAJOR} * 1000 + ${VERSION_MINOR} + 100")
+# For internal firmware use, three-part u16: 0.80.2 -> 0*1000 + 80*10 + 2 + 100 = 902
+math(EXPR FIRMWARE_VERSION "${VERSION_MAJOR} * 1000 + ${VERSION_MINOR} * 10 + ${VERSION_PATCH} + 100")
 
 ## Post-Build Commands
 add_custom_command(
