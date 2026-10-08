@@ -1,0 +1,16 @@
+[package]
+name = "deskhop-text-channel"
+version = "0.1.0"
+edition = "2021"
+description = "DeskHop text channel tray utility (firmware v0.80.3+)"
+
+# Single native exe, no runtime dependencies, no third-party crates (hand-written FFI).
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
+[[bin]]
+name = "deskhop-text-channel"
+path = "src/main.rs"

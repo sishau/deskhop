@@ -170,3 +170,14 @@ Ctrl+V ◀──写剪贴板──重组校验──HID IN 拉取(阅后即焚)�
    不带 Shift 的 Ctrl+数字）。最终定稿 **Ctrl+Shift+1 推送 / Ctrl+Shift+2
    拉取**（全局注册全 FREE 已探测，应用内零冲突）。热键讨论历三轮：
    Ctrl+Alt+S/F（占）→ Ctrl+Alt+U/D（换）→ Ctrl+Shift+S/F（拦）→ 数字。
+7. **主机侧工具改为 Rust（2026-10-08）**：`tools/text-channel/`（Cargo 项目，
+   **零第三方依赖**，手写 FFI 调 hid.dll/setupapi.dll/user32/shell32）。
+   产物 `deskhop-text-channel.exe` ~150KB 单文件、免安装免 AHK、后台托盘常驻，
+   两机跑同一 exe——顺带解决"禁 U 盘笔记本怎么传脚本"（exe 走任意网络渠道）。
+   热键：**Ctrl+Shift+1 = 清空剪贴板→^c 复制选中→推送**（1.5s 超时轮询新剪贴板）、
+   **Ctrl+Shift+2 = 拉取→写剪贴板→^v 贴到光标处**、Ctrl+Shift+0 / 托盘右键退出。
+   粘贴落点说明：Windows 粘贴永远落在键盘焦点（=最后点击位置），非鼠标指针。
+8. **AHK v1 推送路径缺陷修复（2026-10-08）**：原 SendPacket 从不写
+   pkt[0]=report_id / pkt[1..2]=0xAA 0x55，TinyUSB 因 report_id 不匹配不剥
+   首字节 → bufsize=13≠12 整包被固件拒绝，推送从未可用（拉取路径正常）。
+   已在 SendPacket 内统一补全帧头。AHK 版保留作参考实现，主推 Rust 版。

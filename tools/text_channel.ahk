@@ -167,10 +167,14 @@ PullText:
 return
 
 ; ========================= Packet helpers =========================
-; pkt: 13-byte buffer, report id at 0, START bytes at 1/2, type at 3
-; filled by caller: data[0..7] at offsets 4..11; checksum appended here.
+; pkt: 13-byte buffer. SendPacket writes the full framing: report id at 0,
+; START bytes (0xAA 0x55) at 1/2, type at 3, checksum at 12.
+; Filled by caller: data[0..7] at offsets 4..11.
 SendPacket(h, type, pkt) {
-    global USB_PKT_LEN, g_hHid
+    global USB_PKT_LEN, REPORT_ID, g_hHid
+    NumPut(REPORT_ID, pkt, 0, "uchar")    ; TinyUSB strips byte 0 only if it equals the report id
+    NumPut(0xAA, pkt, 1, "uchar")         ; START1
+    NumPut(0x55, pkt, 2, "uchar")         ; START2
     NumPut(type, pkt, 3, "uchar")
     sum := 0
     Loop, 8
