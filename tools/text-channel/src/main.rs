@@ -9,7 +9,7 @@
 //                  on the clipboard and paste it at the caret (^v)
 //   Ctrl+Shift+0 : exit
 //
-// Right-click the tray icon for an Exit menu. Feedback via tray balloons.
+// Right-click the tray icon for an Exit menu.
 //
 // Uses only hid.dll / setupapi.dll / user32 / kernel32 / shell32 through
 // hand-written FFI - no third-party crates, no AHK, no driver.
@@ -68,13 +68,10 @@ const CF_UNICODETEXT: u32 = 13;
 const GMEM_MOVEABLE: u32 = 0x2;
 
 const NIM_ADD: u32 = 0;
-const NIM_MODIFY: u32 = 1;
 const NIM_DELETE: u32 = 2;
 const NIF_MESSAGE: u32 = 0x1;
 const NIF_ICON: u32 = 0x2;
 const NIF_TIP: u32 = 0x4;
-const NIF_INFO: u32 = 0x10;
-const NIIF_INFO: u32 = 0x1;
 const TRAY_CALLBACK: u32 = WM_APP + 1;
 
 const MF_STRING: u32 = 0x0;
@@ -516,9 +513,7 @@ fn tap_with_ctrl(vk: i32) {
 // ========================= Actions =========================
 
 fn do_push() {
-    let hwnd = TRAY_HWND.load(Ordering::Relaxed);
     let Some(h) = get_hid() else {
-        notify(hwnd, "DeskHop not found", "Vendor HID (VID_1209&PID_C000&MI_02) not found. Is the board running v0.80.3?");
         return;
     };
 
@@ -544,68 +539,35 @@ fn do_push() {
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
     let Some(text) = text else {
-        notify(hwnd, "Copy failed", "No text was copied - is something selected?");
         return;
     };
 
-    match push_text(h, &text) {
-        Ok((n, truncated)) => {
-            let msg = if truncated {
-                format!("{n} bytes pushed (truncated at 8 KB)")
-            } else {
-                format!("{n} bytes pushed to the other board")
-            };
-            notify(hwnd, "Sent", &msg);
-        }
-        Err(e) => {
-            hid_invalidate();
-            notify(hwnd, "Push failed", &e);
-        }
+    if let Err(_) = push_text(h, &text) {
+        hid_invalidate();
     }
 }
 
 fn do_pull() {
-    let hwnd = TRAY_HWND.load(Ordering::Relaxed);
     let Some(h) = get_hid() else {
-        notify(hwnd, "DeskHop not found", "Vendor HID (VID_1209&PID_C000&MI_02) not found. Is the board running v0.80.3?");
         return;
     };
 
     match pull_text(h) {
-        Err(e) => {
+        Err(_) => {
             hid_invalidate();
-            notify(hwnd, "Pull failed", &e);
         }
-        Ok(None) => {
-            notify(hwnd, "Nothing to pull", "No text was sent to this machine.");
-        }
+        Ok(None) => {}
         Ok(Some(text)) => {
             if !clipboard_set_text(&text) {
-                notify(hwnd, "Pull failed", "Could not set the clipboard.");
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(80));
             tap_with_ctrl(VK_KEY_V); // paste at the caret
-            notify(hwnd, "Pasted", &format!("{} bytes pasted at the caret", text.len()));
         }
     }
 }
 
 // ========================= Tray =========================
-
-fn notify(hwnd: Handle, title: &str, msg: &str) {
-    unsafe {
-        let mut n: NotifyIconDataW = std::mem::zeroed();
-        n.cb_size = std::mem::size_of::<NotifyIconDataW>() as u32;
-        n.hwnd = hwnd;
-        n.uid = 1;
-        n.uflags = NIF_INFO;
-        fill_wide(&mut n.sz_info, msg);
-        fill_wide(&mut n.sz_info_title, title);
-        n.dw_info_flags = NIIF_INFO;
-        Shell_NotifyIconW(NIM_MODIFY, &n);
-    }
-}
 
 fn add_tray(hwnd: Handle) {
     unsafe {
@@ -615,7 +577,13 @@ fn add_tray(hwnd: Handle) {
         n.uid = 1;
         n.uflags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         n.callback_msg = TRAY_CALLBACK;
-        n.hicon = LoadIconW(0, 32512usize as *const u16); // IDI_APPLICATION
+        let instance = GetModuleHandleW(std::ptr::null());
+        let icon = LoadIconW(instance, 1usize as *const u16); // resource ID 1 (icon.rc)
+        n.hicon = if icon != 0 {
+            icon
+        } else {
+            LoadIconW(0, 32512usize as *const u16) // IDI_APPLICATION fallback
+        };
         fill_wide(&mut n.sz_tip, "DeskHop text channel");
         Shell_NotifyIconW(NIM_ADD, &n);
     }
@@ -704,12 +672,9 @@ fn main() {
 
         // Ctrl+Shift+1 push / Ctrl+Shift+2 pull / Ctrl+Shift+0 exit
         let mods = MOD_CONTROL | MOD_SHIFT;
-        let ok = RegisterHotKey(hwnd, 1, mods, 0x31) != 0
-            && RegisterHotKey(hwnd, 2, mods, 0x32) != 0;
+        RegisterHotKey(hwnd, 1, mods, 0x31);
+        RegisterHotKey(hwnd, 2, mods, 0x32);
         RegisterHotKey(hwnd, 3, mods, 0x30);
-        if !ok {
-            notify(hwnd, "Hotkey conflict", "Ctrl+Shift+1/2 are taken by another program.");
-        }
 
         let mut msg: Msg = std::mem::zeroed();
         while GetMessageW(&mut msg, 0, 0, 0) > 0 {
