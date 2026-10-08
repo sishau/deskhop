@@ -188,7 +188,14 @@ Ctrl+V ◀──写剪贴板──重组校验──HID IN 拉取(阅后即焚)�
    协议逻辑经 mock HID 回环测试（帧头/校验和/UTF-8 边界截断/d7 编码往返）。
 10. **AHK v2 版（2026-10-08）**：`tools/text_channel_v2.ahk`，行为与 Rust exe
    对齐的单键流（Ctrl+Shift+1 复制选中并推 / Ctrl+Shift+2 拉取并贴光标 /
-   Ctrl+Shift+0 退出），v2 语法要点：NumPut/NumGet(Type, ..., Target, Offset)、
+   Ctrl+Shift+0 退出），v2 语法要点：NumPut 支持 (Type, Value, ..., Target,
+   Offset) 多值形式，但 **NumGet 只有 (Target [, Offset, Type]) 一种形式**、
    Buffer 替代 VarSetCapacity、StrPut(str, buf, "UTF-8") 返回含 null 字节数、
    SetTimer(闭包)。Send("^c") 在按住 Ctrl+Shift 时由 v2 自动临时松 Shift，
    无需手动 tap_with_ctrl。
+11. **v2 NumGet 换序修复 + v1 脚本删除（2026-10-08）**：用户笔记本实测 v2
+   脚本在 SendPacket 的 `NumGet("uchar", pkt, ...)` 处报 Invalid parameter(s)
+   （NumPut type-first 全部通过后才炸到 NumGet）——AHK v2.0 的 NumGet 无
+   type-first 形式，仅 NumPut 有。全脚本 7 处 NumGet 统一改为
+   (Target, Offset, Type)。**text_channel.ahk（v1）按用户要求删除**，AHK
+   线仅保留 v2 版；其 VarSetCapacity / 裸 setupapi 导出名等历史坑随之归档。

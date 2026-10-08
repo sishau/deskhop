@@ -72,7 +72,7 @@ PushText() {
         total := MAX_TEXT
         ; back off to a UTF-8 boundary: first dropped byte must not be a
         ; continuation byte (0x80..0xBF)
-        while (total > 0 && (NumGet("uchar", raw, total) & 0xC0) = 0x80)
+        while (total > 0 && (NumGet(raw, total, "uchar") & 0xC0) = 0x80)
             total--
         truncated := true
     }
@@ -138,11 +138,11 @@ PullText() {
             return
         }
         ; rbuf = [report_id][0xAA][0x55][type][d0..d7][checksum]
-        if (NumGet("uchar", rbuf, 1) != 0xAA || NumGet("uchar", rbuf, 2) != 0x55) {
+        if (NumGet(rbuf, 1, "uchar") != 0xAA || NumGet(rbuf, 2, "uchar") != 0x55) {
             Tip("Pull failed (bad framing)")
             return
         }
-        type := NumGet("uchar", rbuf, 3)
+        type := NumGet(rbuf, 3, "uchar")
         if (type = TC_PULL_EMPTY)
             break
         if (type != TC_PULL_DATA) {
@@ -151,12 +151,12 @@ PullText() {
         }
         sum := 0
         Loop 8
-            sum ^= NumGet("uchar", rbuf, 3 + A_Index)
-        if (sum != NumGet("uchar", rbuf, 12)) {
+            sum ^= NumGet(rbuf, 3 + A_Index, "uchar")
+        if (sum != NumGet(rbuf, 12, "uchar")) {
             Tip("Pull failed (checksum mismatch)")
             return
         }
-        flags := NumGet("uchar", rbuf, 11)      ; data[7]
+        flags := NumGet(rbuf, 11, "uchar")      ; data[7]
         eof := (flags & 0x80) != 0
         chunk := eof ? (flags & 0x7F) : 7
         if (chunk > 0) {
@@ -189,9 +189,11 @@ SendPacket(h, type, data) {
     NumPut("uchar", 0x55, pkt, 2)        ; START2
     NumPut("uchar", type, pkt, 3)
     DllCall("RtlMoveMemory", "ptr", pkt.Ptr + 4, "ptr", data.Ptr, "ptr", 8)
+    ; NB: v2.0 NumGet has NO type-first form (only NumPut does) - the
+    ; argument order here must stay (Target, Offset, Type).
     sum := 0
     Loop 8
-        sum ^= NumGet("uchar", pkt, 3 + A_Index)
+        sum ^= NumGet(pkt, 3 + A_Index, "uchar")
     NumPut("uchar", sum, pkt, 12)
     return DllCall("hid.dll\HidD_SetOutputReport", "ptr", h, "ptr", pkt, "uint", USB_PKT_LEN, "int") != 0
 }
