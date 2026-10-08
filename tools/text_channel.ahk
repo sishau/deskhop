@@ -205,8 +205,9 @@ OpenVendorHid() {
     VarSetCapacity(guid, 16, 0)
     DllCall("hid.dll\HidD_GetHidGuid", "ptr", &guid)
 
-    ; DIGCF_PRESENT | DIGCF_DEVICEINTERFACE
-    hInfo := DllCall("setupapi\SetupDiGetClassDevs", "ptr", &guid, "ptr", 0, "ptr", 0, "uint", 0x12, "ptr")
+    ; DIGCF_PRESENT | DIGCF_DEVICEINTERFACE. NB: only the W export exists -
+    ; a bare "SetupDiGetClassDevs" is MISSING from setupapi.dll.
+    hInfo := DllCall("setupapi\SetupDiGetClassDevsW", "ptr", &guid, "ptr", 0, "ptr", 0, "uint", 0x12, "ptr")
     if (hInfo = -1 || hInfo = 0)
         return 0
 
@@ -227,7 +228,8 @@ OpenVendorHid() {
             continue
         VarSetCapacity(detail, need, 0)
         NumPut((A_PtrSize = 8) ? 8 : 6, detail, 0, "uint")
-        if (!DllCall("setupapi\SetupDiGetDeviceInterfaceDetailW", "ptr", hInfo, "ptr", &ifData, "ptr", &detail, "uint", need, "uint*", 0, "ptr", 0))
+        dummy := 0
+        if (!DllCall("setupapi\SetupDiGetDeviceInterfaceDetailW", "ptr", hInfo, "ptr", &ifData, "ptr", &detail, "uint", need, "uint*", dummy, "ptr", 0))
             continue
 
         devPath := StrGet(&detail + 4, need - 4, "utf-16")

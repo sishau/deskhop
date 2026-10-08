@@ -65,6 +65,12 @@ u32.SetClipboardData.restype = ctypes.c_void_p
 u32.SetClipboardData.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
 
 setup.SetupDiGetClassDevsW.restype = ctypes.c_void_p
+# HDEVINFO is pointer-sized on x64: without these argtypes ctypes truncates
+# the handle to 32 bits and SetupDiEnumDeviceInterfaces fails on index 0.
+setup.SetupDiEnumDeviceInterfaces.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                              ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+setup.SetupDiGetDeviceInterfaceDetailW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                                   ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p]
 setup.SetupDiDestroyDeviceInfoList.argtypes = [ctypes.c_void_p]
 
 
@@ -96,7 +102,7 @@ def open_vendor_hid():
             if not need.value:
                 continue
             buf = ctypes.create_string_buffer(need.value)
-            ctypes.memmove(buf, ctypes.c_uint32(8), 4)  # cbSize = 8 on x64
+            buf[0:4] = (8).to_bytes(4, "little")  # cbSize = 8 on x64
             if not setup.SetupDiGetDeviceInterfaceDetailW(info, ctypes.byref(ifd), buf, need, None, None):
                 continue
             path = ctypes.wstring_at(ctypes.addressof(buf) + 4).lower()
@@ -245,7 +251,7 @@ def main(argv):
                 print("nothing buffered on this board's Pico")
                 return
             clip_set(text)
-            print(text)
+            # print(text)
             print("--- %d chars pulled (also placed on the clipboard)" % len(text), file=sys.stderr)
         else:
             print(__doc__.strip())
