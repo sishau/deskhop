@@ -181,3 +181,14 @@ Ctrl+V ◀──写剪贴板──重组校验──HID IN 拉取(阅后即焚)�
    pkt[0]=report_id / pkt[1..2]=0xAA 0x55，TinyUSB 因 report_id 不匹配不剥
    首字节 → bufsize=13≠12 整包被固件拒绝，推送从未可用（拉取路径正常）。
    已在 SendPacket 内统一补全帧头。AHK 版保留作参考实现，主推 Rust 版。
+9. **最小 Python 版（2026-10-08）**：`tools/text_channel_min.py`，纯标准库
+   （ctypes 直调 hid.dll/setupapi.dll/user32/kernel32），~230 行，免安装。
+   面向笔记本（敏感环境：无常驻进程、无热键、无钩子，单次调用即退）。
+   用法：`push [file|-]`（默认推剪贴板）`pull`（拉取→剪贴板+stdout）。
+   协议逻辑经 mock HID 回环测试（帧头/校验和/UTF-8 边界截断/d7 编码往返）。
+10. **AHK v2 版（2026-10-08）**：`tools/text_channel_v2.ahk`，行为与 Rust exe
+   对齐的单键流（Ctrl+Shift+1 复制选中并推 / Ctrl+Shift+2 拉取并贴光标 /
+   Ctrl+Shift+0 退出），v2 语法要点：NumPut/NumGet(Type, ..., Target, Offset)、
+   Buffer 替代 VarSetCapacity、StrPut(str, buf, "UTF-8") 返回含 null 字节数、
+   SetTimer(闭包)。Send("^c") 在按住 Ctrl+Shift 时由 v2 自动临时松 Shift，
+   无需手动 tap_with_ctrl。
