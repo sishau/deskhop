@@ -12,19 +12,16 @@
 #include "main.h"
 #include <math.h>
 
-#define MACOS_SWITCH_MOVE_X 10
-#define MACOS_SWITCH_MOVE_COUNT 5
 #define ACCEL_POINTS 7
 
-/* Cross-boundary relative pulse size in physical pixels. Small on purpose:
-   the OS cursor moves by (delta x OS pointer multiplier), so a small delta
-   keeps the landing inside the target screen even if the multiplier is not
-   exactly 1 (pointer speed off notch 6 / EPP quirks), while a full-width
-   slide would undershoot (cursor stuck on the previous screen) or overshoot. */
-#define PORTAL_PULSE_PX 90
+/* Single-report movement cap, in 0~32767 strip units (~1/8 screen).
+   High-DPI mice plus acceleration can emit deltas larger than the remaining
+   distance to an edge; without a cap the cursor teleports across it in one
+   report, which feels like a premature screen switch ("halfway switch"). */
+#define OFFSET_CAP 4096
 
 /* Fractional remainders of the exact virtual-coordinate accumulation on the
-   relative side display (see update_mouse_position). Bounded by +-side_px. */
+   relative side display (see detect_and_update). Bounded by +-side_px. */
 static int32_t rel_rem_x = 0, rel_rem_y = 0;
 
 /* Side display physical pixel size, with fallback for zeroed (pre-v9) config */
@@ -38,95 +35,119 @@ static void side_display_px(uint16_t *width, uint16_t *height) {
         *height = SIDE_DISPLAY_HEIGHT_PX;
 }
 
-uint16_t get_jump_threshold(output_t *output, enum screen_pos_e direction) {
-    const uint16_t NO_JUMP_THRESHOLD = 0;
+/* ====================== v4: one signed coordinate plane ======================
+   Origin = main display top-left, y grows downward (HID convention):
 
-    /* On a relative extension screen (index > 1) only the cross-PC portal edge
-       is threshold-gated (P1: side display BOTTOM #4; P2: side display RIGHT
-       #6) - every other edge is a physical wall or a local switch */
-    if (output->screen_index > 1) {
-        bool cross_portal =
-            (global_state.layout_profile == LAYOUT_PROFILE_HOST &&
-             output->number == OUTPUT_A && direction == BOTTOM) ||
-            (global_state.layout_profile == LAYOUT_PROFILE_LAPTOP &&
-             output->number == OUTPUT_B && direction == RIGHT);
+         side display     |  main display           y ∈ [0, MAX]
+         internal screen  |  virtual corridor       y ∈ [MAX+1, 2MAX+1]
+                          x = 0
+      x ∈ [−MAX, −1]        x ∈ [0, MAX]
 
-        return cross_portal ? global_state.config.jump_threshold : NO_JUMP_THRESHOLD;
+   - main display / internal screen are the two Windows primaries: driven
+     with absolute reports, 1:1 mapping, zero drift, no calibration.
+   - side display is relative-only (KB5003637 clamps absolute reports to the
+     primary): driven with raw deltas, tracked exactly in plane units.
+   - virtual corridor hides the cursor between the two primaries: the
+     diagonal internal <-> main-display path walks through it and both ends
+     land proportionally and exactly (absolute on both sides).
+
+   Crossing an axis switches cells. Edge types by layout profile:
+   - natural handoff (same machine, no gap):  P1 main<->side, P2 side<->internal
+   - direct cross-PC exit (target is a primary: exact absolute landing)
+   - pulse entry (cross-PC into the side display: park on the local primary,
+     one relative pulse of exact size - exact when the OS pointer scale is
+     1:1, which is a hard requirement for every side-display path)
+   - corridor (crossing hides the cursor, exit reappears proportionally)     */
+
+typedef enum {
+    CELL_MAIN,      /* x >= 0, y <= MAX: host main display (absolute)  */
+    CELL_SIDE,      /* x <  0, y <= MAX: side display (relative)       */
+    CELL_INTERNAL,  /* x <  0, y >  MAX: laptop internal (absolute)    */
+    CELL_VIRTUAL,   /* x >= 0, y >  MAX: corridor, no output           */
+} plane_cell_e;
+
+#define BOTTOM_ROW_MIN (MAX_SCREEN_COORD + 1)
+#define PLANE_Y_MAX    (2 * MAX_SCREEN_COORD + 1)
+
+typedef struct {
+    bool    cross;
+    bool    horizontal;
+    int     direction;   /* enum screen_pos_e: LEFT/RIGHT or TOP/BOTTOM */
+    bool    natural;     /* same-machine handoff: no gap, no threshold  */
+    int32_t other;       /* non-crossing coordinate at the crossing point */
+} crossing_t;
+
+static plane_cell_e cell_of(int32_t x, int32_t y) {
+    if (y <= MAX_SCREEN_COORD)
+        return (x >= 0) ? CELL_MAIN : CELL_SIDE;
+    return (x >= 0) ? CELL_VIRTUAL : CELL_INTERNAL;
+}
+
+static int32_t clamp_i32(int32_t v, int32_t lo, int32_t hi) {
+    return (v < lo) ? lo : (v > hi) ? hi : v;
+}
+
+/* Keep the plane inside the current cell (outer borders are walls). */
+static void cell_clamp(plane_cell_e cell, int32_t *x, int32_t *y) {
+    int32_t xlo = 0, xhi = MAX_SCREEN_COORD, ylo = 0, yhi = MAX_SCREEN_COORD;
+
+    if (cell == CELL_SIDE || cell == CELL_INTERNAL) {
+        xlo = -MAX_SCREEN_COORD;
+        xhi = -1;
     }
-
-    /* If on main screen but going away from the border, switch is local */
-    if (output->pos == direction)
-        return NO_JUMP_THRESHOLD;
-
-    /* ... in all other cases, switch is non-local (jump to another pc) */
-    return global_state.config.jump_threshold;
+    if (cell == CELL_INTERNAL || cell == CELL_VIRTUAL) {
+        ylo = BOTTOM_ROW_MIN;
+        yhi = PLANE_Y_MAX;
+    }
+    *x = clamp_i32(*x, xlo, xhi);
+    *y = clamp_i32(*y, ylo, yhi);
 }
 
-/* Check if our upcoming mouse movement would result in having to switch outputs */
-enum screen_pos_e is_screen_switch_needed(output_t *output, int position, int offset) {
-    enum screen_pos_e direction = (offset < 0) ? LEFT : RIGHT;
+/* The plane is the single source of truth; pointer_x/y mirror the current
+   cell's screen-local absolute coordinates (what the reports carry). */
+static void set_plane_position(device_t *state, int32_t px, int32_t py) {
+    state->plane_x = px;
+    state->plane_y = py;
 
-    /* No position offset implies no switch needed. */
-    if (offset == 0)
-        return NONE;
-
-    /* Local switches (virtual desktop changes) have no gap, only cross-output jumps use threshold */
-    uint16_t threshold = get_jump_threshold(output, direction);
-
-    if (position + offset < MIN_SCREEN_COORD - threshold)
-        return LEFT;
-
-    if (position + offset > MAX_SCREEN_COORD + threshold)
-        return RIGHT;
-
-    return NONE;
+    switch (cell_of(px, py)) {
+    case CELL_INTERNAL:
+        state->pointer_x = px + MAX_SCREEN_COORD;
+        state->pointer_y = py - BOTTOM_ROW_MIN;
+        break;
+    case CELL_SIDE:
+        state->pointer_x = px + MAX_SCREEN_COORD;
+        state->pointer_y = py;
+        break;
+    default:
+        state->pointer_x = px;
+        state->pointer_y = py;
+        break;
+    }
 }
 
-/* Vertical-axis counterpart of is_screen_switch_needed. Returns TOP when the
-   pointer would leave through the upper edge, BOTTOM through the lower edge.
-   Threshold policy follows the vertical portals of the active layout profile
-   (docs/screen-layout-proposal.md §8):
-   - HOST:   A's lower edge (main display #2 / side display #4) and B's upper
-             edge (#3) are cross-PC jumps -> jump_threshold
-   - LAPTOP: A's lower edge is the cross-PC corner portal (#2), B's stacked
-             screens switch internally with no gap (same as horizontal) */
-enum screen_pos_e is_vertical_switch_needed(output_t *output, int position, int offset) {
-    /* No position offset implies no switch needed. */
-    if (offset == 0)
-        return NONE;
+/* Crossing policy per (cell, direction): does this edge lead anywhere, and
+   is it a same-machine handoff (no gap) or a threshold-gated jump? */
+static bool edge_policy(plane_cell_e cell, int direction, bool *natural) {
+    bool host = (global_state.layout_profile == LAYOUT_PROFILE_HOST);
+    *natural = false;
 
-    enum screen_pos_e direction = (offset < 0) ? TOP : BOTTOM;
-
-    uint16_t threshold;
-
-    if (global_state.layout_profile == LAYOUT_PROFILE_HOST)
-        threshold = ((output->number == OUTPUT_A) == (direction == BOTTOM))
-                        ? global_state.config.jump_threshold : 0;
-    else
-        threshold = (output->number == OUTPUT_A && direction == BOTTOM)
-                        ? global_state.config.jump_threshold : 0;
-
-    if (position + offset < MIN_SCREEN_COORD - threshold)
-        return TOP;
-
-    if (position + offset > MAX_SCREEN_COORD + threshold)
-        return BOTTOM;
-
-    return NONE;
-}
-
-/* Move mouse coordinate 'position' by 'offset', but don't fall off the screen */
-int32_t move_and_keep_on_screen(int position, int offset) {
-    /* Lowest we can go is 0 */
-    if (position + offset < MIN_SCREEN_COORD)
-        return MIN_SCREEN_COORD;
-
-    /* Highest we can go is MAX_SCREEN_COORD */
-    else if (position + offset > MAX_SCREEN_COORD)
-        return MAX_SCREEN_COORD;
-
-    /* We're still on screen, all good */
-    return position + offset;
+    switch (cell) {
+    case CELL_MAIN:
+        if (direction == LEFT)   { *natural = host; return true; }  /* side next door  */
+        if (direction == BOTTOM) return true;                       /* corridor        */
+        return false;                                               /* RIGHT/UP walls  */
+    case CELL_SIDE:
+        if (direction == RIGHT)  { *natural = host; return true; }  /* back to main    */
+        if (direction == BOTTOM) { *natural = !host; return true; } /* P2: internal    */
+        return false;                                               /* LEFT/UP walls   */
+    case CELL_INTERNAL:
+        if (direction == TOP)    { *natural = !host; return true; } /* P2: side above  */
+        if (direction == RIGHT)  return true;                       /* corridor        */
+        return false;                                               /* LEFT/DOWN walls */
+    case CELL_VIRTUAL:
+        return (direction == TOP || direction == LEFT);             /* corridor exits  */
+    }
+    return false;
 }
 
 /* Implement basic mouse acceleration based on actual 2D movement magnitude.
@@ -182,57 +203,123 @@ float calculate_mouse_acceleration_factor(int32_t offset_x, int32_t offset_y) {
     return lower->factor + interpolation_pos * (upper->factor - lower->factor);
 }
 
-/* Returns LEFT if need to jump left, RIGHT if right, NONE otherwise */
-enum screen_pos_e update_mouse_position(device_t *state, mouse_values_t *values) {
-    output_t *current    = &state->config.output[state->active_output];
-    uint8_t reduce_speed = 0;
+/* Scan one axis for a boundary crossing. Returns the fraction t ∈ (0,1] of
+   the offset at which the (threshold) boundary is reached, or 0 = no
+   crossing (wall, not reached, or blocked by a held mouse button). */
+static float axis_scan(device_t *state, plane_cell_e cell, bool horizontal,
+                       int32_t offset, bool *natural, int *direction) {
+    *natural = false;
+    if (offset == 0)
+        return 0.0f;
 
-    /* Check if we are configured to move slowly */
-    if (state->mouse_zoom)
-        reduce_speed = MOUSE_ZOOM_SCALING_FACTOR;
+    int32_t need, reach;
 
-    /* Calculate movement.
-       On the relative side display the OS cursor moves by the RAW deltas
-       (create_mouse_report passes them through unscaled: Speed and firmware
-       acceleration never affect the actual cursor there). The virtual
-       coordinates must therefore accumulate move * 32767 / side_px exactly -
-       with a fractional remainder - or they drift away from the real cursor
-       and the portal triggers fire in the wrong places (cursor "teleporting"
-       to the main display while still in mid-screen on the side display). */
-    int offset_x, offset_y;
+    if (horizontal) {
+        *direction = (offset < 0) ? LEFT : RIGHT;
+        if (!edge_policy(cell, *direction, natural))
+            return 0.0f;
+        if (!*natural && state->mouse_buttons)
+            return 0.0f;   /* no cross-PC jumps while dragging */
 
-    if (state->relative_mouse) {
+        /* Boundary x = 0: left column ends at -1, right column starts at 0 */
+        need = (*direction == LEFT)
+            ? -1 - (int32_t)global_state.config.jump_threshold
+            : (int32_t)global_state.config.jump_threshold;
+        reach = state->plane_x + offset;
+        if ((*direction == LEFT) ? (reach > need) : (reach < need))
+            return 0.0f;
+    } else {
+        *direction = (offset < 0) ? TOP : BOTTOM;
+        if (!edge_policy(cell, *direction, natural))
+            return 0.0f;
+        if (!*natural && state->mouse_buttons)
+            return 0.0f;
+
+        /* Boundary y = MAX / MAX+1 between the two rows */
+        need = (*direction == BOTTOM)
+            ? BOTTOM_ROW_MIN + (int32_t)global_state.config.jump_threshold
+            : MAX_SCREEN_COORD - (int32_t)global_state.config.jump_threshold;
+        reach = state->plane_y + offset;
+        if ((*direction == BOTTOM) ? (reach < need) : (reach > need))
+            return 0.0f;
+    }
+
+    return (float)(need - (horizontal ? state->plane_x : state->plane_y)) /
+           (float)offset;
+}
+
+/* Clamp the non-crossing coordinate into the target cell (horizontal
+   crossings stay in the same row, vertical ones in the same column). */
+static int32_t clamp_other(int32_t v, plane_cell_e cell, bool is_y) {
+    bool bottom_row = (cell == CELL_INTERNAL || cell == CELL_VIRTUAL);
+    bool left_col   = (cell == CELL_SIDE     || cell == CELL_INTERNAL);
+
+    if (is_y)
+        return bottom_row ? clamp_i32(v, BOTTOM_ROW_MIN, PLANE_Y_MAX)
+                          : clamp_i32(v, 0, MAX_SCREEN_COORD);
+    return left_col ? clamp_i32(v, -MAX_SCREEN_COORD, -1)
+                    : clamp_i32(v, 0, MAX_SCREEN_COORD);
+}
+
+/* Compute per-report movement, detect plane crossings, advance the plane.
+   The caller emits the movement report first (on exits it doubles as the
+   park report at the leaving edge), then handles the crossing. */
+static crossing_t detect_and_update(device_t *state, mouse_values_t *values) {
+    plane_cell_e cell = cell_of(state->plane_x, state->plane_y);
+    output_t *current = &state->config.output[state->active_output];
+    uint8_t reduce_speed = state->mouse_zoom ? MOUSE_ZOOM_SCALING_FACTOR : 0;
+    crossing_t c = {false, false, NONE, false, 0};
+    int32_t ox, oy;
+
+    if (cell == CELL_SIDE) {
+        /* Relative side display: the OS cursor moves by the RAW deltas
+           (Speed / firmware acceleration never apply there), so the plane
+           accumulates move * 32767 / side_px exactly, with remainder. */
         uint16_t aux_w, aux_h;
         side_display_px(&aux_w, &aux_h);
 
         int32_t num = (int32_t)values->move_x * MAX_SCREEN_COORD + rel_rem_x;
-        offset_x    = num / (int32_t)aux_w;
+        ox          = num / (int32_t)aux_w;
         rel_rem_x   = num % (int32_t)aux_w;
 
-        num       = (int32_t)values->move_y * MAX_SCREEN_COORD + rel_rem_y;
-        offset_y  = num / (int32_t)aux_h;
-        rel_rem_y = num % (int32_t)aux_h;
+        num        = (int32_t)values->move_y * MAX_SCREEN_COORD + rel_rem_y;
+        oy         = num / (int32_t)aux_h;
+        rel_rem_y  = num % (int32_t)aux_h;
     } else {
-        float acceleration_factor = calculate_mouse_acceleration_factor(values->move_x, values->move_y);
-        offset_x = round(values->move_x * acceleration_factor * (current->speed_x >> reduce_speed));
-        offset_y = round(values->move_y * acceleration_factor * (current->speed_y >> reduce_speed));
+        float acceleration_factor =
+            calculate_mouse_acceleration_factor(values->move_x, values->move_y);
+        ox = round(values->move_x * acceleration_factor * (current->speed_x >> reduce_speed));
+        oy = round(values->move_y * acceleration_factor * (current->speed_y >> reduce_speed));
     }
 
-    /* Determine if our upcoming movement would stay within the screen */
-    enum screen_pos_e switch_direction = is_screen_switch_needed(current, state->pointer_x, offset_x);
+    ox = clamp_i32(ox, -OFFSET_CAP, OFFSET_CAP);
+    oy = clamp_i32(oy, -OFFSET_CAP, OFFSET_CAP);
 
-    /* The horizontal axis takes precedence; only check Y if X stays on screen */
-    if (switch_direction == NONE)
-        switch_direction = is_vertical_switch_needed(current, state->pointer_y, offset_y);
-
-    /* Update movement */
-    state->pointer_x = move_and_keep_on_screen(state->pointer_x, offset_x);
-    state->pointer_y = move_and_keep_on_screen(state->pointer_y, offset_y);
-
-    /* Update buttons state */
     state->mouse_buttons = values->buttons;
 
-    return switch_direction;
+    if (!state->switch_lock && !state->gaming_mode) {
+        bool nat_x, nat_y;
+        int dir_x = NONE, dir_y = NONE;
+        float tx = axis_scan(state, cell, true,  ox, &nat_x, &dir_x);
+        float ty = axis_scan(state, cell, false, oy, &nat_y, &dir_y);
+
+        if (tx > 0 && (ty <= 0 || tx <= ty)) {
+            c.cross = true; c.horizontal = true;
+            c.direction = dir_x; c.natural = nat_x;
+            c.other = clamp_other(state->plane_y + (int32_t)(oy * tx), cell, true);
+        } else if (ty > 0) {
+            c.cross = true; c.horizontal = false;
+            c.direction = dir_y; c.natural = nat_y;
+            c.other = clamp_other(state->plane_x + (int32_t)(ox * ty), cell, false);
+        }
+    }
+
+    /* Advance inside the current cell; crossing handlers re-anchor. */
+    int32_t nx = state->plane_x + ox, ny = state->plane_y + oy;
+    cell_clamp(cell, &nx, &ny);
+    set_plane_position(state, nx, ny);
+
+    return c;
 }
 
 /* If we are active output, queue packet to mouse queue, else send them through UART */
@@ -245,376 +332,170 @@ void output_mouse_report(mouse_report_t *report, device_t *state) {
     }
 }
 
-/* Calculate and return Y coordinate when moving from screen out_from to screen out_to */
-int16_t scale_y_coordinate(int screen_from, int screen_to, device_t *state) {
-    output_t *from = &state->config.output[screen_from];
-    output_t *to   = &state->config.output[screen_to];
-
-    int size_to   = to->border.bottom - to->border.top;
-    int size_from = from->border.bottom - from->border.top;
-
-    /* If sizes match, there is nothing to do */
-    if (size_from == size_to)
-        return state->pointer_y;
-
-    /* Moving from smaller ==> bigger screen
-       y_a = top + (((bottom - top) * y_b) / HEIGHT) */
-
-    if (size_from > size_to) {
-        return to->border.top + ((size_to * state->pointer_y) / MAX_SCREEN_COORD);
-    }
-
-    /* Moving from bigger ==> smaller screen
-       y_b = ((y_a - top) * HEIGHT) / (bottom - top) */
-
-    if (state->pointer_y < from->border.top)
-        return MIN_SCREEN_COORD;
-
-    if (state->pointer_y > from->border.bottom)
-        return MAX_SCREEN_COORD;
-
-    return ((state->pointer_y - from->border.top) * MAX_SCREEN_COORD) / size_from;
-}
-
-void switch_to_another_pc(
-    device_t *state, output_t *output, int output_to, int direction) {
-    uint8_t *mouse_park_pos = &state->config.output[state->active_output].mouse_park_pos;
-
-    int16_t mouse_y = (*mouse_park_pos == 0) ? MIN_SCREEN_COORD : /* Top */
-                      (*mouse_park_pos == 1) ? MAX_SCREEN_COORD : /* Bottom */
-                                               state->pointer_y;  /* Previous */
-
-    mouse_report_t hidden_pointer = {.y = mouse_y, .x = MAX_SCREEN_COORD};
-
-    output_mouse_report(&hidden_pointer, state);
-    set_active_output(state, output_to);
-    state->pointer_x = (direction == LEFT) ? MAX_SCREEN_COORD : MIN_SCREEN_COORD;
-
-    /* v3.1: deterministic landing on the main display's bottom-left corner.
-       The previous Y-proportional mapping made the cursor appear at a
-       different spot on every crossing, which proved hard to track visually. */
-    state->pointer_y = MAX_SCREEN_COORD;
-
-    /* v3: the target may have been left on its relative extension screen (#4
-       in P1, #6 in P2), so reset screen index and coordinate mode explicitly */
-    state->relative_mouse = false;
-    state->config.output[output_to].screen_index = 1;
-}
-
-/* One relative report sliding the OS cursor across the arrangement boundary
-   onto the side display. The relative HID interface has 16-bit axes; the
-   delta is intentionally small (PORTAL_PULSE_PX) for OS-multiplier robustness.
-   Buttons forced to 0 to avoid carrying press state across the switch, like
-   the macOS workaround does. */
+/* One relative report sliding the OS cursor across the arrangement boundary.
+   The relative HID interface has 16-bit axes. Buttons forced to 0 to avoid
+   carrying press state across the switch, like the macOS workaround does. */
 static void send_relative_pulse(device_t *state, int16_t dx, int16_t dy) {
     mouse_report_t pulse = {.x = dx, .y = dy, .mode = RELATIVE, .buttons = 0};
     output_mouse_report(&pulse, state);
 }
 
-/* #2 (both profiles): main display lower edge -> internal screen.
-   v3.1: deterministic landing on the internal screen's top-left corner. */
-void switch_main_bottom_to_laptop(device_t *state) {
-    int16_t x0 = state->pointer_x;
+/* ========================= Crossing handlers ========================= */
 
-    /* Pin the leaving cursor on the main display's bottom edge (absolute) */
-    mouse_report_t park = {.x = x0, .y = MAX_SCREEN_COORD};
-    output_mouse_report(&park, state);
+/* Same-machine adjacent cells: the OS cursor has already crossed the
+   physical boundary; flip the coordinate mode and re-anchor the plane. */
+static void natural_handoff(device_t *state, bool into_relative, int32_t x, int32_t y) {
+    rel_rem_x = rel_rem_y = 0;
+    state->relative_mouse = into_relative;
+    set_plane_position(state, x, y);
+}
 
-    set_active_output(state, OUTPUT_B);
+/* Corridor: no machine receives reports while inside; the leaving cursor
+   stays parked at the exit edge (the movement report did that). */
+static void corridor_enter(device_t *state, int32_t x, int32_t y) {
+    state->corridor_mode = true;
     state->relative_mouse = false;
-    state->config.output[OUTPUT_B].screen_index = 1;
-
-    state->pointer_x = MIN_SCREEN_COORD;
-    state->pointer_y = MIN_SCREEN_COORD;
+    set_plane_position(state, x, y);
 }
 
-/* #3 (P1): laptop internal screen upper edge -> side display.
-   The side display is relative, so the host cursor cannot be placed there
-   directly (KB5003637 clamps absolute reports to the main display): park it
-   absolutely on the main display's left edge (mid height), then send one
-   SMALL relative pulse across the arrangement boundary. The pulse enters
-   through the side display's right edge (physically adjacent to the main
-   display) and lands just inside it at mid height - deterministic, and the
-   small delta stays robust even if the OS pointer multiplier is not 1:1. */
-void switch_laptop_top_to_side(device_t *state) {
-    int16_t x0 = state->pointer_x;
-
-    /* Pin the leaving cursor on the internal screen's upper edge */
-    mouse_report_t park = {.x = x0, .y = MIN_SCREEN_COORD};
-    output_mouse_report(&park, state);
-
-    set_active_output(state, OUTPUT_A);
-
-    /* Absolute park on the main display's left edge, mid height */
-    mouse_report_t corner = {.x = MIN_SCREEN_COORD, .y = MAX_SCREEN_COORD / 2};
-    output_mouse_report(&corner, state);
-
-    send_relative_pulse(state, -PORTAL_PULSE_PX, 0);
-
-    state->relative_mouse = true;
-    state->config.output[OUTPUT_A].screen_index = 2;
-
-    uint16_t aux_w, aux_h;
-    side_display_px(&aux_w, &aux_h);
-    state->pointer_x = MAX_SCREEN_COORD - (int32_t)PORTAL_PULSE_PX * MAX_SCREEN_COORD / aux_w;
-    state->pointer_y = MAX_SCREEN_COORD / 2;
-}
-
-/* #4 (P1): side display lower edge -> internal screen upper edge. The leaving
-   cursor is already pinned at the side display's bottom edge by Windows (the
-   exit was triggered exactly there, and relative mode clamps it); absolute
-   reports would be clamped to the main display, so no park report is sent.
-   v3.1: deterministic landing on the internal screen's top-left corner. */
-void switch_side_bottom_to_laptop(device_t *state) {
-    set_active_output(state, OUTPUT_B);
-    state->relative_mouse = false;
-    state->config.output[OUTPUT_B].screen_index = 1;
-
-    state->pointer_x = MIN_SCREEN_COORD;
-    state->pointer_y = MIN_SCREEN_COORD;
-}
-
-/* #5 (P2): main display left edge -> side display. Park+pulse variant: the
-   laptop's cursor is parked absolutely on the internal screen's top edge
-   (mid width), then pulsed straight up across the stacked-screens boundary.
-   Lands just inside the side display's bottom edge at mid width - the small
-   delta keeps the landing on the side display even if the OS pointer
-   multiplier is not 1:1. */
-void switch_pc_to_side_horizontal(device_t *state) {
-    int16_t y0 = state->pointer_y;
-
-    /* Pin the leaving cursor on the main display's left edge */
-    mouse_report_t park = {.x = MIN_SCREEN_COORD, .y = y0};
-    output_mouse_report(&park, state);
-
-    set_active_output(state, OUTPUT_B);
-
-    /* Absolute park on the internal screen's top edge, mid width */
-    mouse_report_t corner = {.x = MAX_SCREEN_COORD / 2, .y = MIN_SCREEN_COORD};
-    output_mouse_report(&corner, state);
-
-    send_relative_pulse(state, 0, -PORTAL_PULSE_PX);
-
-    state->relative_mouse = true;
-    state->config.output[OUTPUT_B].screen_index = 2;
-
-    uint16_t aux_w, aux_h;
-    side_display_px(&aux_w, &aux_h);
-    state->pointer_x = MAX_SCREEN_COORD / 2;
-    state->pointer_y = MAX_SCREEN_COORD - (int32_t)PORTAL_PULSE_PX * MAX_SCREEN_COORD / aux_h;
-}
-
-/* #6 (P2): side display right edge -> main display left edge. Like #4, the
-   leaving cursor stays pinned at the side display's right edge (relative
-   mode, clamped by Windows), so no park report is sent.
-   v3.1: deterministic landing on the main display's bottom-left corner. */
-void switch_side_to_main_horizontal(device_t *state) {
+static void corridor_exit_to_main(device_t *state, int32_t x) {
+    state->corridor_mode = false;
     set_active_output(state, OUTPUT_A);
     state->relative_mouse = false;
-    state->config.output[OUTPUT_A].screen_index = 1;
-
-    state->pointer_x = MIN_SCREEN_COORD;
-    state->pointer_y = MAX_SCREEN_COORD;
+    set_plane_position(state, x, MAX_SCREEN_COORD);
+    mouse_report_t land = {.x = x, .y = MAX_SCREEN_COORD,
+                           .mode = ABSOLUTE, .buttons = 0};
+    output_mouse_report(&land, state);
 }
 
-void switch_virtual_desktop_macos(device_t *state, int direction) {
-    /*
-     * Fix for MACOS: Before sending new absolute report setting X to 0:
-     * 1. Move the cursor to the edge of the screen directly in the middle to handle screens
-     *    of different heights
-     * 2. Send relative mouse movement one or two pixels in the direction of movement to get
-     *    the cursor onto the next screen
-     */
-    mouse_report_t edge_position = {
-        .x = (direction == LEFT) ? MIN_SCREEN_COORD : MAX_SCREEN_COORD,
-        .y = MAX_SCREEN_COORD / 2,
-        .mode = ABSOLUTE,
-        .buttons = state->mouse_buttons,
-    };
-
-    uint16_t move = (direction == LEFT) ? -MACOS_SWITCH_MOVE_X : MACOS_SWITCH_MOVE_X;
-    mouse_report_t move_relative_one = {
-        .x = move,
-        .mode = RELATIVE,
-        /* Force buttons to 0 for relative movement to avoid duplicating the button 
-           press state, which would leave the relative HID mouse permanently stuck 
-           down if the user is dragging an item while switching desktops. */
-        .buttons = 0,
-    };
-
-    output_mouse_report(&edge_position, state);
-
-    /* Once doesn't seem reliable enough, do it a few times */
-    for (int i = 0; i < MACOS_SWITCH_MOVE_COUNT; i++)
-        output_mouse_report(&move_relative_one, state);
+static void corridor_exit_to_internal(device_t *state, int32_t y) {
+    state->corridor_mode = false;
+    set_active_output(state, OUTPUT_B);
+    state->relative_mouse = false;
+    set_plane_position(state, -1, y);
+    mouse_report_t land = {.x = MAX_SCREEN_COORD - 1,
+                           .y = y - BOTTOM_ROW_MIN,
+                           .mode = ABSOLUTE, .buttons = 0};
+    output_mouse_report(&land, state);
 }
 
-void switch_virtual_desktop(device_t *state, output_t *output, int new_index, int direction) {
-    switch (output->os) {
-        case MACOS:
-            switch_virtual_desktop_macos(state, direction);
-            break;
-
-        case WINDOWS:
-            /* TODO: Switch to relative-only if index > 1, but keep tabs to switch back */
-            state->relative_mouse = (new_index > 1);
-            break;
-
-        case LINUX:
-        case ANDROID:
-        case OTHER:
-            /* Linux should treat all desktops as a single virtual screen, so you should leave
-            screen_count at 1 and it should just work */
-            break;
-    }
-
-    state->pointer_x       = (direction == RIGHT) ? MIN_SCREEN_COORD : MAX_SCREEN_COORD;
-    output->screen_index = new_index;
+/* Cross-PC exits from the side display: Windows already clamped the leaving
+   cursor at the side display's edge (it has no neighbouring screen there in
+   the host topology), so the movement report doubled as the park. Land
+   proportionally on the target primary - exact, no drift, no calibration. */
+static void side_exit_to_main(device_t *state, int32_t y) {      /* P2, RIGHT */
+    set_active_output(state, OUTPUT_A);
+    state->relative_mouse = false;
+    rel_rem_x = rel_rem_y = 0;
+    set_plane_position(state, 0, y);
+    mouse_report_t land = {.x = 0, .y = y, .mode = ABSOLUTE, .buttons = 0};
+    output_mouse_report(&land, state);
 }
 
-/* Vertical counterpart of switch_virtual_desktop (internal screen change along
-   the Y axis). The macOS workaround doesn't apply here; Windows switches to
-   the relative HID interface the same way as horizontal desktop changes do. */
-void switch_virtual_desktop_vertical(device_t *state, output_t *output, int new_index, int direction) {
-    if (output->os == WINDOWS)
-        state->relative_mouse = (new_index > 1);
-
-    /* Enter the new screen through the physical edge we crossed */
-    state->pointer_y     = (direction == BOTTOM) ? MIN_SCREEN_COORD : MAX_SCREEN_COORD;
-    output->screen_index = new_index;
+static void side_exit_to_internal(device_t *state, int32_t x) {  /* P1, BOTTOM */
+    set_active_output(state, OUTPUT_B);
+    state->relative_mouse = false;
+    rel_rem_x = rel_rem_y = 0;
+    set_plane_position(state, x, BOTTOM_ROW_MIN);
+    mouse_report_t land = {.x = x + MAX_SCREEN_COORD, .y = 0,
+                           .mode = ABSOLUTE, .buttons = 0};
+    output_mouse_report(&land, state);
 }
 
-/*                               BORDER
-                                   |
-       .---------.    .---------.  |  .---------.    .---------.    .---------.
-      ||    B2   ||  ||    B1   || | ||    A1   ||  ||    A2   ||  ||    A3   ||   (output, index)
-      ||  extra  ||  ||   main  || | ||   main  ||  ||  extra  ||  ||  extra  ||   (main or extra)
-       '---------'    '---------'  |  '---------'    '---------'    '---------'
-          )___(          )___(     |     )___(          )___(          )___(
+/* Cross-PC entries into the (relative) side display: park the target
+   machine's cursor absolutely on its primary, then send one relative pulse
+   sized to land exactly at the kept coordinate. All the math lives on the
+   mouse board - no inter-board coordinate exchange is needed. Exact when
+   the OS pointer scale is 1:1; otherwise the landing error scales with the
+   pulse size (the reason 1:1 is a hard requirement). */
 
-   v3 layout profiles (docs/screen-layout-proposal.md §8): the side display is
-   index 2 (relative) on whichever output owns it.
-   - HOST   {A:2, B:1}, A.pos = LEFT:  [A2 side][A1 main][BORDER][B1]
-     horizontal cross-PC portal = B1 right edge (#1); A main display's right
-     edge is a wall; A main display's left edge <-> side display = internal.
-   - LAPTOP {A:1, B:2}, A.pos = RIGHT: [B2 side][B1 main][BORDER][A1]
-     horizontal cross-PC portals = B1 right edge (#1), B2 right edge (#6) and
-     A1 left edge (#5); B's horizontal internal edges are walls (stacked). */
-void do_screen_switch(device_t *state, int direction) {
-    output_t *output = &state->config.output[state->active_output];
+static void pulse_entry_internal_to_side(device_t *state, int32_t x) {  /* P1, TOP */
+    uint16_t aux_w, aux_h;
+    side_display_px(&aux_w, &aux_h);
 
-    /* No switching allowed if explicitly disabled or in gaming mode */
-    if (state->switch_lock || state->gaming_mode)
-        return;
+    set_active_output(state, OUTPUT_A);
+    state->relative_mouse = true;
+    rel_rem_x = rel_rem_y = 0;
 
-    /* We want to jump in the direction of the other computer */
-    if (output->pos != direction) {
-        if (output->screen_index == 1) { /* We are at the border -> switch outputs */
-            /* No switching allowed if mouse button is held. Should only apply to the border! */
-            if (state->mouse_buttons)
-                return;
+    /* Park the host cursor at the main display's bottom-left corner */
+    mouse_report_t park = {.x = 0, .y = MAX_SCREEN_COORD,
+                           .mode = ABSOLUTE, .buttons = 0};
+    output_mouse_report(&park, state);
 
-            /* HOST profile: A's main display right edge is a physical dead
-               end (the side display hangs off its LEFT edge); only B's
-               internal screen right edge crosses PCs (#1) */
-            if (state->layout_profile == LAYOUT_PROFILE_HOST && output->number == OUTPUT_A)
-                return;
+    /* One pulse across the arrangement boundary, landing at the same column
+       proportion on the side display's bottom edge (bottom-aligned rows) */
+    int32_t col = x + MAX_SCREEN_COORD;   /* kept column, 0..MAX proportion */
+    int32_t dx = (int32_t)((int64_t)col * aux_w / MAX_SCREEN_COORD) - aux_w;
+    send_relative_pulse(state, (int16_t)dx, -1);
 
-            /* LAPTOP profile: leaving the main display through its left edge
-               enters the side display via park+pulse (#5) */
-            if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_A) {
-                switch_pc_to_side_horizontal(state);
-                return;
-            }
-
-            switch_to_another_pc(state, output, 1 - state->active_output, direction);
-        }
-        /* Not on the main screen, moving toward the border. In the LAPTOP
-           profile output B's screens are stacked vertically, so its horizontal
-           edges are physically non-existent - except the side display's right
-           edge, which is the cross-PC portal to the main display (#6) */
-        else if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_B) {
-            if (direction == RIGHT) {
-                if (state->mouse_buttons)
-                    return;
-                switch_side_to_main_horizontal(state);
-            }
-            return;
-        }
-        else
-            switch_virtual_desktop(state, output, output->screen_index - 1, direction);
-    }
-
-    /* We want to jump away from the other computer, only possible if there is another screen to jump to */
-    else if (output->screen_index < output->screen_count) {
-        /* Same LAPTOP-profile guard: no physical horizontal edge between
-           output B's stacked screens */
-        if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_B)
-            return;
-
-        /* HOST profile: main display's left edge <-> side display right edge,
-           an internal switch on the physically adjacent pair (#5/#6 of P1) */
-        switch_virtual_desktop(state, output, output->screen_index + 1, direction);
-    }
+    set_plane_position(state, x, MAX_SCREEN_COORD - MAX_SCREEN_COORD / aux_h);
 }
 
-/* Vertical-axis screen switching, driven by the layout profile (v3):
-   - HOST:   side display on A. Vertical portals: A1 lower edge -> laptop
-             (corner map, #2), A2 (side display) lower edge -> laptop (#4),
-             B1 upper edge -> side display (park+pulse, #3)
-   - LAPTOP: side display on B. Vertical portals: A1 lower edge -> laptop
-             (corner map, #2, cross-PC); B's stacked screens switch internally
-             (side display above the internal screen, natural handoff) */
-void do_vertical_switch(device_t *state, int direction) {
-    output_t *output = &state->config.output[state->active_output];
+static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LEFT */
+    uint16_t aux_w, aux_h;
+    side_display_px(&aux_w, &aux_h);
 
-    /* No switching allowed if explicitly disabled or in gaming mode */
-    if (state->switch_lock || state->gaming_mode)
-        return;
+    set_active_output(state, OUTPUT_B);
+    state->relative_mouse = true;
+    rel_rem_x = rel_rem_y = 0;
 
-    if (state->layout_profile == LAYOUT_PROFILE_HOST) {
-        if (output->number == OUTPUT_B) {
-            /* B's internal screen upper edge -> side display bottom edge (#3) */
-            if (direction == TOP && output->screen_index == 1) {
-                if (state->mouse_buttons)
-                    return;
-                switch_laptop_top_to_side(state);
-            }
-            /* B lower edge: physical wall */
-        } else {
-            /* Output A: lower edge crosses to the laptop from both of its
-               screens (main display #2, side display #4) */
-            if (direction == BOTTOM) {
-                if (state->mouse_buttons)
-                    return;
+    /* Park the laptop cursor at the internal screen's top-right corner */
+    mouse_report_t park = {.x = MAX_SCREEN_COORD, .y = 0,
+                           .mode = ABSOLUTE, .buttons = 0};
+    output_mouse_report(&park, state);
 
-                if (output->screen_index == 1)
-                    switch_main_bottom_to_laptop(state);
+    /* One pulse up across the stacked boundary, landing at the kept height
+       on the side display's right edge (right-aligned columns) */
+    int32_t dy = (int32_t)((int64_t)(y - MAX_SCREEN_COORD) * aux_h / MAX_SCREEN_COORD);
+    if (dy > -1)
+        dy = -1;
+    send_relative_pulse(state, 0, (int16_t)dy);
+
+    set_plane_position(state, -1, y);
+}
+
+static void handle_crossing(device_t *state, plane_cell_e from, crossing_t *c) {
+    bool host = (state->layout_profile == LAYOUT_PROFILE_HOST);
+
+    if (c->horizontal) {
+        if (c->direction == LEFT) {
+            if (from == CELL_MAIN) {
+                if (host)
+                    natural_handoff(state, true, -1, c->other);        /* P1: main -> side */
                 else
-                    switch_side_bottom_to_laptop(state);
+                    pulse_entry_main_to_side(state, c->other);         /* P2: park + pulse */
+            } else { /* CELL_VIRTUAL */
+                corridor_exit_to_internal(state, c->other);
             }
-            /* A upper edge: physical wall */
+        } else { /* RIGHT */
+            if (from == CELL_SIDE) {
+                if (host)
+                    natural_handoff(state, false, 0, c->other);        /* P1: side -> main */
+                else
+                    side_exit_to_main(state, c->other);                /* P2: direct exit  */
+            } else { /* CELL_INTERNAL */
+                corridor_enter(state, 0, c->other);
+            }
         }
-    }
-
-    else {
-        if (output->number == OUTPUT_A) {
-            /* A's main display lower edge -> laptop internal screen right
-               edge (#2, corner mapping, cross-PC) */
-            if (direction == BOTTOM && output->screen_index == 1) {
-                if (state->mouse_buttons)
-                    return;
-                switch_main_bottom_to_laptop(state);
+    } else {
+        if (c->direction == BOTTOM) {
+            if (from == CELL_SIDE) {
+                if (host)
+                    side_exit_to_internal(state, c->other);            /* P1: direct exit  */
+                else
+                    natural_handoff(state, false, c->other, BOTTOM_ROW_MIN); /* P2 */
+            } else { /* CELL_MAIN */
+                corridor_enter(state, c->other, BOTTOM_ROW_MIN);
             }
-            /* A upper edge: physical wall */
-        } else {
-            /* B's screens are stacked (side display above the internal
-               screen); their shared edges are internal switches, no gap */
-            if (direction == TOP && output->screen_index < output->screen_count)
-                switch_virtual_desktop_vertical(state, output, output->screen_index + 1, direction);
-
-            else if (direction == BOTTOM && output->screen_index > 1)
-                switch_virtual_desktop_vertical(state, output, output->screen_index - 1, direction);
+        } else { /* TOP */
+            if (from == CELL_INTERNAL) {
+                if (host)
+                    pulse_entry_internal_to_side(state, c->other);     /* P1: park + pulse */
+                else
+                    natural_handoff(state, true, c->other, MAX_SCREEN_COORD); /* P2 */
+            } else { /* CELL_VIRTUAL */
+                corridor_exit_to_main(state, c->other);
+            }
         }
     }
 }
@@ -661,18 +542,22 @@ void extract_report_values(uint8_t *raw_report, int len, device_t *state, mouse_
 mouse_report_t create_mouse_report(device_t *state, mouse_values_t *values) {
     mouse_report_t mouse_report = {
         .buttons = values->buttons,
-        .x       = state->pointer_x,
-        .y       = state->pointer_y,
         .wheel   = values->wheel,
         .pan     = values->pan,
         .mode    = ABSOLUTE,
     };
 
-    /* Workaround for Windows multiple desktops */
-    if (state->relative_mouse || state->gaming_mode) {
+    /* Relative mode: Windows multiple desktops workaround, the gaming mode
+       passthru, and the (relative-only) side display cell. */
+    if (state->relative_mouse || state->gaming_mode ||
+        cell_of(state->plane_x, state->plane_y) == CELL_SIDE) {
         mouse_report.x = values->move_x;
         mouse_report.y = values->move_y;
         mouse_report.mode = RELATIVE;
+    } else {
+        /* pointer_x/y already hold the current cell's screen-local coords */
+        mouse_report.x = state->pointer_x;
+        mouse_report.y = state->pointer_y;
     }
 
     return mouse_report;
@@ -695,23 +580,23 @@ void process_mouse_report(uint8_t *raw_report, int len, uint8_t itf, hid_interfa
         return;
     }
 
-    /* Calculate and update mouse pointer movement. */
-    enum screen_pos_e switch_direction = update_mouse_position(state, &values);
+    plane_cell_e from = cell_of(state->plane_x, state->plane_y);
 
-    /* Create the report for the output PC based on the updated values */
-    mouse_report_t report = create_mouse_report(state, &values);
+    /* Move the plane and detect edge crossings (if any). */
+    crossing_t c = detect_and_update(state, &values);
 
-    /* Move the mouse, depending where the output is supposed to go */
-    output_mouse_report(&report, state);
-
-    /* We use the mouse to switch outputs: LEFT/RIGHT on the horizontal axis,
-       TOP/BOTTOM through the vertical portal of the active layout profile */
-    if (switch_direction != NONE) {
-        if (switch_direction == LEFT || switch_direction == RIGHT)
-            do_screen_switch(state, switch_direction);
-        else
-            do_vertical_switch(state, switch_direction);
+    /* Emit the movement report - on exits it doubles as the park report at
+       the leaving edge (the OS clamps it there). Suppressed inside the
+       corridor, where no machine owns the cursor; crossing handlers that
+       need reports send them themselves. */
+    if (!state->corridor_mode) {
+        mouse_report_t report = create_mouse_report(state, &values);
+        output_mouse_report(&report, state);
     }
+
+    /* We use the mouse to switch cells: cross an axis of the plane */
+    if (c.cross)
+        handle_crossing(state, from, &c);
 }
 
 /* ==================================================== *

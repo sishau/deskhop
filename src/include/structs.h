@@ -114,8 +114,10 @@ typedef struct {
     hid_keyboard_report_t remote_kbd_state;              // Store combined remote keyboard state
     uint8_t max_kbd_idx;                                 // Store largest kbd_idx seen
 
-    int16_t pointer_x; // Store and update the location of our mouse pointer
+    int16_t pointer_x; // Screen-local absolute X of the current cell (report-facing mirror)
     int16_t pointer_y;
+    int32_t plane_x;   // v4: signed plane coordinate - single source of truth
+    int32_t plane_y;   // v4: origin = main display top-left, y down, see mouse.c
     int16_t mouse_buttons; // Store and update the state of mouse buttons
 
     config_t config;       // Device configuration, loaded from flash or defaults used
@@ -151,6 +153,7 @@ typedef struct {
     bool switch_lock;        // True when device is prevented from switching
     bool onboard_led_state;  // True when LED is ON
     bool relative_mouse;     // True when relative mouse mode is used
+    bool corridor_mode;      // v4: cursor inside the virtual corridor, no reports
     bool gaming_mode;        // True when gaming mode is on (relative passthru + lock)
     uint8_t layout_profile;  // Active layout profile (enum layout_profile_e), RAM only, never stored in flash
     bool config_mode_active; // True when config mode is active
