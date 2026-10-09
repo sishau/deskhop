@@ -424,6 +424,12 @@ void apply_layout_profile(device_t *state, uint8_t profile) {
         output->screen_index = 1;
     }
 
+    /* v3: the main displays are index 1 on both outputs. Output A's extension
+       (the side display, index 2) hangs off the main display's LEFT edge in the
+       HOST profile (making 主显左缘↔副显右缘 an internal switch), and A has no
+       extension in LAPTOP. B.pos stays LEFT throughout. */
+    state->config.output[OUTPUT_A].pos = (profile == LAYOUT_PROFILE_HOST) ? LEFT : RIGHT;
+
     state->relative_mouse = false;
 }
 

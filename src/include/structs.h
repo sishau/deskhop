@@ -84,7 +84,12 @@ typedef struct {
     /* If not set to zero (previously reserved), gaming mode should be active by default */
     uint8_t gaming_mode_default;
     uint8_t led_mode;
-    uint8_t _reserved[2];
+
+    /* Side display physical pixel size, used by the park+pulse landing of
+       cross-PC switches that enter the (relative) side display. Defaults
+       1920/1080; zero values are treated as those defaults at runtime. */
+    uint16_t side_width_px;
+    uint16_t side_height_px;
 
     // Keep checksum at the end of the struct
     uint32_t checksum;

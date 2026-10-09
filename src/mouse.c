@@ -19,12 +19,21 @@
 uint16_t get_jump_threshold(output_t *output, enum screen_pos_e direction) {
     const uint16_t NO_JUMP_THRESHOLD = 0;
 
-    /* If on non-main local screen, every possible switch is local */
-    if (output->screen_index > 1)
-        return NO_JUMP_THRESHOLD;
+    /* On a relative extension screen (index > 1) only the cross-PC portal edge
+       is threshold-gated (P1: side display BOTTOM #4; P2: side display RIGHT
+       #6) - every other edge is a physical wall or a local switch */
+    if (output->screen_index > 1) {
+        bool cross_portal =
+            (global_state.layout_profile == LAYOUT_PROFILE_HOST &&
+             output->number == OUTPUT_A && direction == BOTTOM) ||
+            (global_state.layout_profile == LAYOUT_PROFILE_LAPTOP &&
+             output->number == OUTPUT_B && direction == RIGHT);
+
+        return cross_portal ? global_state.config.jump_threshold : NO_JUMP_THRESHOLD;
+    }
 
     /* If on main screen but going away from the border, switch is local */
-    if (output->pos == direction && output->screen_index == 1)
+    if (output->pos == direction)
         return NO_JUMP_THRESHOLD;
 
     /* ... in all other cases, switch is non-local (jump to another pc) */
@@ -53,22 +62,27 @@ enum screen_pos_e is_screen_switch_needed(output_t *output, int position, int of
 
 /* Vertical-axis counterpart of is_screen_switch_needed. Returns TOP when the
    pointer would leave through the upper edge, BOTTOM through the lower edge.
-   Threshold policy depends on the layout profile:
-   - HOST:   the vertical border is the cross-PC jump, gated by jump_threshold
-             on the main screen (extra screens have no vertical neighbours)
-   - LAPTOP: the vertical border is an internal screen switch inside output B,
-             which has no gap (same policy as horizontal internal switches) */
+   Threshold policy follows the vertical portals of the active layout profile
+   (docs/screen-layout-proposal.md §8):
+   - HOST:   A's lower edge (main display #2 / side display #4) and B's upper
+             edge (#3) are cross-PC jumps -> jump_threshold
+   - LAPTOP: A's lower edge is the cross-PC corner portal (#2), B's stacked
+             screens switch internally with no gap (same as horizontal) */
 enum screen_pos_e is_vertical_switch_needed(output_t *output, int position, int offset) {
     /* No position offset implies no switch needed. */
     if (offset == 0)
         return NONE;
 
+    enum screen_pos_e direction = (offset < 0) ? TOP : BOTTOM;
+
     uint16_t threshold;
 
     if (global_state.layout_profile == LAYOUT_PROFILE_HOST)
-        threshold = (output->screen_index == 1) ? global_state.config.jump_threshold : 0;
+        threshold = ((output->number == OUTPUT_A) == (direction == BOTTOM))
+                        ? global_state.config.jump_threshold : 0;
     else
-        threshold = 0;
+        threshold = (output->number == OUTPUT_A && direction == BOTTOM)
+                        ? global_state.config.jump_threshold : 0;
 
     if (position + offset < MIN_SCREEN_COORD - threshold)
         return TOP;
@@ -232,20 +246,144 @@ void switch_to_another_pc(
     set_active_output(state, output_to);
     state->pointer_x = (direction == LEFT) ? MAX_SCREEN_COORD : MIN_SCREEN_COORD;
     state->pointer_y = scale_y_coordinate(output->number, 1 - output->number, state);
+
+    /* v3: the target may have been left on its relative extension screen (#4
+       in P1, #6 in P2), so reset screen index and coordinate mode explicitly */
+    state->relative_mouse = false;
+    state->config.output[output_to].screen_index = 1;
 }
 
-/* Vertical counterpart of switch_to_another_pc: park the hidden pointer on the
-   physical edge we're leaving through, then enter the other PC from the
-   opposite edge. X is kept as-is (no width info, no scaling by design). */
-void switch_to_another_pc_vertical(device_t *state, int output_to, int direction) {
-    mouse_report_t hidden_pointer = {
-        .x = state->pointer_x,
-        .y = (direction == BOTTOM) ? MAX_SCREEN_COORD : MIN_SCREEN_COORD,
-    };
+/* Side display physical pixel size, with fallback for zeroed (pre-v9) config */
+static void side_display_px(uint16_t *width, uint16_t *height) {
+    *width  = global_state.config.side_width_px;
+    *height = global_state.config.side_height_px;
 
-    output_mouse_report(&hidden_pointer, state);
-    set_active_output(state, output_to);
-    state->pointer_y = (direction == BOTTOM) ? MIN_SCREEN_COORD : MAX_SCREEN_COORD;
+    if (*width == 0)
+        *width = SIDE_DISPLAY_WIDTH_PX;
+    if (*height == 0)
+        *height = SIDE_DISPLAY_HEIGHT_PX;
+}
+
+/* One large-delta relative report sliding the OS cursor onto the side display.
+   The relative HID interface has 16-bit axes, so a ~1920 px slide fits in a
+   single report (millisecond-level). Buttons forced to 0 to avoid carrying
+   press state across the switch, like the macOS workaround does. */
+static void send_relative_pulse(device_t *state, int16_t dx, int16_t dy) {
+    mouse_report_t pulse = {.x = dx, .y = dy, .mode = RELATIVE, .buttons = 0};
+    output_mouse_report(&pulse, state);
+}
+
+/* #2 (both profiles): main display lower edge -> internal screen right edge.
+   Corner mapping: the exit position along the main display's bottom edge
+   becomes the entry height along the internal screen's right edge (equal
+   proportion) - sweeping the bottom edge slides the cursor down the right
+   edge, and the two screens' shared corner maps onto itself. */
+void switch_main_bottom_to_laptop(device_t *state) {
+    int16_t x0 = state->pointer_x;
+
+    /* Pin the leaving cursor on the main display's bottom edge (absolute) */
+    mouse_report_t park = {.x = x0, .y = MAX_SCREEN_COORD};
+    output_mouse_report(&park, state);
+
+    set_active_output(state, OUTPUT_B);
+    state->relative_mouse = false;
+    state->config.output[OUTPUT_B].screen_index = 1;
+
+    state->pointer_x = MAX_SCREEN_COORD;
+    state->pointer_y = x0;
+}
+
+/* #3 (P1): laptop internal screen upper edge -> side display bottom edge.
+   The side display is relative, so the host cursor cannot be placed there
+   directly (KB5003637 clamps absolute reports to the main display): park it
+   absolutely on the main display's bottom-left corner, then send one
+   relative pulse across the (bottom-aligned) arrangement boundary onto the
+   side display's bottom edge at the kept X proportion. */
+void switch_laptop_top_to_side(device_t *state) {
+    int16_t x0 = state->pointer_x;
+    uint16_t aux_w, aux_h;
+    side_display_px(&aux_w, &aux_h);
+
+    /* Pin the leaving cursor on the internal screen's upper edge */
+    mouse_report_t park = {.x = x0, .y = MIN_SCREEN_COORD};
+    output_mouse_report(&park, state);
+
+    set_active_output(state, OUTPUT_A);
+
+    /* Absolute park on the main display's bottom-left corner */
+    mouse_report_t corner = {.x = MIN_SCREEN_COORD, .y = MAX_SCREEN_COORD};
+    output_mouse_report(&corner, state);
+
+    /* One relative pulse across into the side display's bottom edge:
+       dx = x0/32767 * aux_w - (aux_w + 1), ranging from -1 (right edge)
+       to -(aux_w + 1) (left edge) */
+    send_relative_pulse(state,
+                        (int16_t)((int32_t)x0 * aux_w / MAX_SCREEN_COORD - aux_w - 1),
+                        -1);
+
+    state->relative_mouse = true;
+    state->config.output[OUTPUT_A].screen_index = 2;
+    state->pointer_x = x0;
+    state->pointer_y = MAX_SCREEN_COORD;
+}
+
+/* #4 (P1): side display lower edge -> internal screen upper edge. The leaving
+   cursor is already pinned at the side display's bottom edge by Windows (the
+   exit was triggered exactly there, and relative mode clamps it); absolute
+   reports would be clamped to the main display, so no park report is sent. */
+void switch_side_bottom_to_laptop(device_t *state) {
+    int16_t x0 = state->pointer_x;
+
+    set_active_output(state, OUTPUT_B);
+    state->relative_mouse = false;
+    state->config.output[OUTPUT_B].screen_index = 1;
+
+    state->pointer_x = x0;
+    state->pointer_y = MIN_SCREEN_COORD;
+}
+
+/* #5 (P2): main display left edge -> side display right edge. Park+pulse
+   variant: the laptop's cursor is parked at the internal screen's top-right
+   corner (absolute), then pulsed straight up along the shared right edge
+   (right edges aligned in the Windows arrangement) onto the side display at
+   the kept height. */
+void switch_pc_to_side_horizontal(device_t *state) {
+    int16_t y0 = state->pointer_y;
+    uint16_t aux_w, aux_h;
+    side_display_px(&aux_w, &aux_h);
+
+    /* Pin the leaving cursor on the main display's left edge */
+    mouse_report_t park = {.x = MIN_SCREEN_COORD, .y = y0};
+    output_mouse_report(&park, state);
+
+    set_active_output(state, OUTPUT_B);
+
+    /* Absolute park on the internal screen's top-right corner */
+    mouse_report_t corner = {.x = MAX_SCREEN_COORD, .y = MIN_SCREEN_COORD};
+    output_mouse_report(&corner, state);
+
+    /* One relative pulse up onto the side display's right edge at y0:
+       dy = -(1 + (aux_h - 1) * (32767 - y0) / 32767), from -1 (bottom edge)
+       to -aux_h (top edge) */
+    send_relative_pulse(state, 0,
+        -(int16_t)(1 + (int32_t)(aux_h - 1) * (MAX_SCREEN_COORD - y0) / MAX_SCREEN_COORD));
+
+    state->relative_mouse = true;
+    state->config.output[OUTPUT_B].screen_index = 2;
+    state->pointer_x = MAX_SCREEN_COORD;
+    state->pointer_y = y0;
+}
+
+/* #6 (P2): side display right edge -> main display left edge. Like #4, the
+   leaving cursor stays pinned at the side display's right edge (relative
+   mode, clamped by Windows), so no park report is sent. */
+void switch_side_to_main_horizontal(device_t *state) {
+    set_active_output(state, OUTPUT_A);
+    state->relative_mouse = false;
+    state->config.output[OUTPUT_A].screen_index = 1;
+
+    state->pointer_x = MIN_SCREEN_COORD;
+    state->pointer_y = scale_y_coordinate(OUTPUT_B, OUTPUT_A, state);
 }
 
 void switch_virtual_desktop_macos(device_t *state, int direction) {
@@ -322,7 +460,15 @@ void switch_virtual_desktop_vertical(device_t *state, output_t *output, int new_
       ||  extra  ||  ||   main  || | ||   main  ||  ||  extra  ||  ||  extra  ||   (main or extra)
        '---------'    '---------'  |  '---------'    '---------'    '---------'
           )___(          )___(     |     )___(          )___(          )___(
-*/
+
+   v3 layout profiles (docs/screen-layout-proposal.md §8): the side display is
+   index 2 (relative) on whichever output owns it.
+   - HOST   {A:2, B:1}, A.pos = LEFT:  [A2 side][A1 main][BORDER][B1]
+     horizontal cross-PC portal = B1 right edge (#1); A main display's right
+     edge is a wall; A main display's left edge <-> side display = internal.
+   - LAPTOP {A:1, B:2}, A.pos = RIGHT: [B2 side][B1 main][BORDER][A1]
+     horizontal cross-PC portals = B1 right edge (#1), B2 right edge (#6) and
+     A1 left edge (#5); B's horizontal internal edges are walls (stacked). */
 void do_screen_switch(device_t *state, int direction) {
     output_t *output = &state->config.output[state->active_output];
 
@@ -333,40 +479,61 @@ void do_screen_switch(device_t *state, int direction) {
     /* We want to jump in the direction of the other computer */
     if (output->pos != direction) {
         if (output->screen_index == 1) { /* We are at the border -> switch outputs */
-            /* HOST profile: cross-PC switching happens on the vertical A/B
-               border instead, so the horizontal border is a physical dead end */
-            if (state->layout_profile == LAYOUT_PROFILE_HOST)
-                return;
-
             /* No switching allowed if mouse button is held. Should only apply to the border! */
             if (state->mouse_buttons)
                 return;
 
+            /* HOST profile: A's main display right edge is a physical dead
+               end (the side display hangs off its LEFT edge); only B's
+               internal screen right edge crosses PCs (#1) */
+            if (state->layout_profile == LAYOUT_PROFILE_HOST && output->number == OUTPUT_A)
+                return;
+
+            /* LAPTOP profile: leaving the main display through its left edge
+               enters the side display via park+pulse (#5) */
+            if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_A) {
+                switch_pc_to_side_horizontal(state);
+                return;
+            }
+
             switch_to_another_pc(state, output, 1 - state->active_output, direction);
         }
-        /* If here, this output has multiple desktops and we are not on the main one.
-           In the LAPTOP profile output B's screens are stacked vertically, so its
-           horizontal internal switches correspond to physically non-existent edges */
-        else if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_B)
+        /* Not on the main screen, moving toward the border. In the LAPTOP
+           profile output B's screens are stacked vertically, so its horizontal
+           edges are physically non-existent - except the side display's right
+           edge, which is the cross-PC portal to the main display (#6) */
+        else if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_B) {
+            if (direction == RIGHT) {
+                if (state->mouse_buttons)
+                    return;
+                switch_side_to_main_horizontal(state);
+            }
             return;
+        }
         else
             switch_virtual_desktop(state, output, output->screen_index - 1, direction);
     }
 
     /* We want to jump away from the other computer, only possible if there is another screen to jump to */
     else if (output->screen_index < output->screen_count) {
-        /* Same LAPTOP-profile guard: no physical edge to the left of output B's screens */
+        /* Same LAPTOP-profile guard: no physical horizontal edge between
+           output B's stacked screens */
         if (state->layout_profile == LAYOUT_PROFILE_LAPTOP && output->number == OUTPUT_B)
             return;
 
+        /* HOST profile: main display's left edge <-> side display right edge,
+           an internal switch on the physically adjacent pair (#5/#6 of P1) */
         switch_virtual_desktop(state, output, output->screen_index + 1, direction);
     }
 }
 
-/* Vertical-axis screen switching, driven by the layout profile:
-   - HOST:   the vertical A/B border (A lower edge -> B, B upper edge -> A),
-             both being cross-PC jumps through the side display
-   - LAPTOP: internal screen switch inside output B (its screens are stacked) */
+/* Vertical-axis screen switching, driven by the layout profile (v3):
+   - HOST:   side display on A. Vertical portals: A1 lower edge -> laptop
+             (corner map, #2), A2 (side display) lower edge -> laptop (#4),
+             B1 upper edge -> side display (park+pulse, #3)
+   - LAPTOP: side display on B. Vertical portals: A1 lower edge -> laptop
+             (corner map, #2, cross-PC); B's stacked screens switch internally
+             (side display above the internal screen, natural handoff) */
 void do_vertical_switch(device_t *state, int direction) {
     output_t *output = &state->config.output[state->active_output];
 
@@ -375,30 +542,49 @@ void do_vertical_switch(device_t *state, int direction) {
         return;
 
     if (state->layout_profile == LAYOUT_PROFILE_HOST) {
-        /* Only the main screen touches the vertical A/B border */
-        if (output->screen_index != 1)
-            return;
+        if (output->number == OUTPUT_B) {
+            /* B's internal screen upper edge -> side display bottom edge (#3) */
+            if (direction == TOP && output->screen_index == 1) {
+                if (state->mouse_buttons)
+                    return;
+                switch_laptop_top_to_side(state);
+            }
+            /* B lower edge: physical wall */
+        } else {
+            /* Output A: lower edge crosses to the laptop from both of its
+               screens (main display #2, side display #4) */
+            if (direction == BOTTOM) {
+                if (state->mouse_buttons)
+                    return;
 
-        /* No border switching while a mouse button is held, same as horizontal */
-        if (state->mouse_buttons)
-            return;
-
-        if (output->number == OUTPUT_A && direction == BOTTOM)
-            switch_to_another_pc_vertical(state, OUTPUT_B, direction);
-        else if (output->number == OUTPUT_B && direction == TOP)
-            switch_to_another_pc_vertical(state, OUTPUT_A, direction);
+                if (output->screen_index == 1)
+                    switch_main_bottom_to_laptop(state);
+                else
+                    switch_side_bottom_to_laptop(state);
+            }
+            /* A upper edge: physical wall */
+        }
     }
 
     else {
-        /* Output B's screens are stacked vertically; output A has just one screen */
-        if (output->number != OUTPUT_B)
-            return;
+        if (output->number == OUTPUT_A) {
+            /* A's main display lower edge -> laptop internal screen right
+               edge (#2, corner mapping, cross-PC) */
+            if (direction == BOTTOM && output->screen_index == 1) {
+                if (state->mouse_buttons)
+                    return;
+                switch_main_bottom_to_laptop(state);
+            }
+            /* A upper edge: physical wall */
+        } else {
+            /* B's screens are stacked (side display above the internal
+               screen); their shared edges are internal switches, no gap */
+            if (direction == TOP && output->screen_index < output->screen_count)
+                switch_virtual_desktop_vertical(state, output, output->screen_index + 1, direction);
 
-        if (direction == BOTTOM && output->screen_index < output->screen_count)
-            switch_virtual_desktop_vertical(state, output, output->screen_index + 1, direction);
-
-        else if (direction == TOP && output->screen_index > 1)
-            switch_virtual_desktop_vertical(state, output, output->screen_index - 1, direction);
+            else if (direction == BOTTOM && output->screen_index > 1)
+                switch_virtual_desktop_vertical(state, output, output->screen_index - 1, direction);
+        }
     }
 }
 

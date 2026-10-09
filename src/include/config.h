@@ -15,7 +15,10 @@
 #include "misc.h"
 #include "screen.h"
 
-#define CURRENT_CONFIG_VERSION 8
+/* v9: _reserved[2] replaced by side_width_px/side_height_px (u16 x2, +2 bytes).
+   Bumping the version invalidates the stored config on first boot (defaults are
+   reloaded) - users re-set threshold/speed once after flashing v0.80.4. */
+#define CURRENT_CONFIG_VERSION 9
 
 /*==============================================================================
  *  Configuration Data

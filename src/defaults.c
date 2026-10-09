@@ -62,4 +62,6 @@ const config_t default_config = {
     .kbd_led_as_indicator = KBD_LED_AS_INDICATOR,
     .jump_threshold = JUMP_THRESHOLD,
     .led_mode = LED_ACTIVE_OUTPUT,
+    .side_width_px = SIDE_DISPLAY_WIDTH_PX,
+    .side_height_px = SIDE_DISPLAY_HEIGHT_PX,
 };

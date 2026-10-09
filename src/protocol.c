@@ -68,6 +68,8 @@ const field_map_t api_field_map[] = {
     { 82, true,  UINT8,  1, offsetof(device_t, relative_mouse) },
     { 83, false, UINT8,  1, offsetof(device_t, config.gaming_mode_default) },
     { 84, false, UINT8,  1, offsetof(device_t, config.led_mode) },
+    { 85, false, UINT16, 2, offsetof(device_t, config.side_width_px) },
+    { 86, false, UINT16, 2, offsetof(device_t, config.side_height_px) },
 };
 
 const field_map_t* get_field_map_entry(uint32_t index) {

@@ -98,6 +98,12 @@
 
 #define JUMP_THRESHOLD 0
 
+/* Physical pixel size of the side display (the one behind the KVM button).
+   Used to compute park+pulse landings when entering the relative side
+   display from the other PC. Zero config values fall back to these. */
+#define SIDE_DISPLAY_WIDTH_PX 1920
+#define SIDE_DISPLAY_HEIGHT_PX 1080
+
 /* Mouse acceleration */
 #define ENABLE_ACCELERATION 1
 
