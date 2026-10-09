@@ -4,11 +4,12 @@
 ; text_channel_v2.ahk - DeskHop cross-board text transfer (firmware v0.80.3+)
 ; AHK v2 port of tools/text_channel.ahk; behaviour aligned with the Rust exe:
 ;
-;   Ctrl+Shift+1 : clear clipboard, ^c the current selection, push to the
-;                  OTHER machine's Pico (8 KB single-shot buffer)
-;   Ctrl+Shift+2 : pull the buffered text from THIS machine's Pico, put it
-;                  on the clipboard and paste it at the caret (^v)
-;   Ctrl+Shift+0 : exit
+;   Ctrl+Alt+U : push the CURRENT CLIPBOARD content to the OTHER machine's
+;                Pico (8 KB single-shot buffer). No keys are ever injected -
+;                copy the text yourself first (^c, Ctrl+Shift+C, right-click).
+;   Ctrl+Alt+D : pull the buffered text from THIS machine's Pico onto the
+;                clipboard. Paste it yourself (^v, Ctrl+Shift+V, right-click).
+;   Ctrl+Alt+0 : exit
 ;
 ; No hotkey-space tray logic - the v2 script is intentionally lean (the Rust
 ; exe is the full-featured build). Only hid.dll / setupapi.dll DllCalls, no
@@ -37,11 +38,11 @@ TC_PULL_EMPTY := 0xFF
 
 gHid := 0    ; cached device handle, 0 = reopen on next use
 
-^+1::PushText()
-^+2::PullText()
-^+0::ExitApp
+^!u::PushText()
+^!d::PullText()
+^!0::ExitApp
 
-; ========================= Push (Ctrl+Shift+1) =========================
+; ========================= Push (Ctrl+Alt+U) =========================
 
 PushText() {
     global gHid
@@ -51,12 +52,8 @@ PushText() {
         return
     }
 
-    A_Clipboard := ""      ; clear, then copy the current selection.
-    Send("^c")             ; v2 Send temporarily releases Shift/Ctrl as needed,
-    if !ClipWait(1.5) {    ; so this is not Ctrl+Shift+C.
-        Tip("Copy failed - is something selected?")
-        return
-    }
+    ; Push the clipboard as-is: the user copies the text themselves, so this
+    ; is safe everywhere (an injected ^c would SIGINT remote shells over SSH).
     text := A_Clipboard
     if (text = "") {
         Tip("Clipboard is empty")
@@ -109,7 +106,7 @@ PushText() {
                   : "Sent " total " bytes to the other machine")
 }
 
-; ========================= Pull (Ctrl+Shift+2) =========================
+; ========================= Pull (Ctrl+Alt+D) =========================
 
 PullText() {
     global gHid
@@ -173,9 +170,9 @@ PullText() {
     }
     text := StrGet(raw.Ptr, "UTF-8")
     A_Clipboard := text
-    Sleep(80)
-    Send("^v")     ; paste at the caret (= last clicked input position)
-    Tip("Pasted " got " bytes at the caret")
+    ; Clipboard only: pasting is left to the user, since terminals disagree
+    ; (^v vs Ctrl+Shift+V vs right-click) and mstsc may not deliver keys.
+    Tip("Pulled " got " bytes to the clipboard")
 }
 
 ; ========================= Packet helpers =========================

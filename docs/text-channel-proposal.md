@@ -199,3 +199,11 @@ Ctrl+V ◀──写剪贴板──重组校验──HID IN 拉取(阅后即焚)�
    type-first 形式，仅 NumPut 有。全脚本 7 处 NumGet 统一改为
    (Target, Offset, Type)。**text_channel.ahk（v1）按用户要求删除**，AHK
    线仅保留 v2 版；其 VarSetCapacity / 裸 setupapi 导出名等历史坑随之归档。
+12. **交互重设计（2026-10-09）**：键注入全线撤除。SSH 会话中注入 ^c 会
+    SIGINT 远端进程（有害），mstsc 全屏热键/注入不可达。定稿为纯推拉：
+    脚本永不模拟按键，复制粘贴全由用户完成（终端 Ctrl+Shift+C / 右键，
+    普通应用 ^c / ^v）。热键改 **Ctrl+Alt+U = 推送当前剪贴板 / Ctrl+Alt+D =
+    拉取到剪贴板 / Ctrl+Alt+0 = 退出**（Ctrl+Alt 池探测空闲；数字行
+    Shift 组合难按被否）。Rust exe 删除 SendInput/GetAsyncKeyState 整块
+    （exe 缩至 148KB），AHK v2 与笔记本合并脚本同步。RDP 场景多数由
+    mstsc 自带剪贴板重定向覆盖。

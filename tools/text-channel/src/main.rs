@@ -3,11 +3,12 @@
 // ---------------------------------------------------------------------------
 // A background tray utility. Runs on BOTH machines connected to the DeskHop.
 //
-//   Ctrl+Shift+1 : copy the current selection (^c) and push it to the OTHER
-//                  machine's Pico (8 KB single-shot buffer)
-//   Ctrl+Shift+2 : pull the buffered text from THIS machine's Pico, place it
-//                  on the clipboard and paste it at the caret (^v)
-//   Ctrl+Shift+0 : exit
+//   Ctrl+Alt+U : push the CURRENT CLIPBOARD content to the OTHER machine's
+//                Pico (8 KB single-shot buffer). No keys are ever injected -
+//                copy the text yourself first (^c, Ctrl+Shift+C, right-click).
+//   Ctrl+Alt+D : pull the buffered text from THIS machine's Pico onto the
+//                clipboard. Paste it yourself (^v, Ctrl+Shift+V, right-click).
+//   Ctrl+Alt+0 : exit
 //
 // Right-click the tray icon for an Exit menu.
 //
@@ -55,14 +56,7 @@ const WM_HOTKEY: u32 = 0x0312;
 const WM_APP: u32 = 0x8000;
 
 const MOD_CONTROL: u32 = 0x2;
-const MOD_SHIFT: u32 = 0x4;
-const VK_SHIFT: i32 = 0x10;
-const VK_CONTROL: i32 = 0x11;
-const VK_KEY_C: i32 = 0x43;
-const VK_KEY_V: i32 = 0x56;
-const KEYEVENTF_KEYUP: u32 = 0x2;
-const INPUT_KEYBOARD: u32 = 1;
-const INPUT_SIZE: usize = 40; // sizeof(INPUT) on x64
+const MOD_ALT: u32 = 0x1;
 
 const CF_UNICODETEXT: u32 = 13;
 const GMEM_MOVEABLE: u32 = 0x2;
@@ -177,8 +171,6 @@ extern "system" {
     fn TranslateMessage(msg: *const Msg) -> i32;
     fn DispatchMessageW(msg: *const Msg) -> isize;
     fn PostQuitMessage(code: i32);
-    fn SendInput(n: u32, inputs: *const u8, size: i32) -> u32;
-    fn GetAsyncKeyState(vk: i32) -> i16;
     fn OpenClipboard(hwnd: Handle) -> i32;
     fn CloseClipboard() -> i32;
     fn EmptyClipboard() -> i32;
@@ -469,79 +461,17 @@ fn clipboard_set_text(s: &str) -> bool {
     }
 }
 
-// ========================= Keyboard =========================
-
-fn key_event(vk: i32, up: bool) -> [u8; INPUT_SIZE] {
-    let mut inp = [0u8; INPUT_SIZE];
-    inp[0..4].copy_from_slice(&INPUT_KEYBOARD.to_ne_bytes()); // type at 0
-    inp[8..10].copy_from_slice(&(vk as u16).to_ne_bytes());   // wVk at 8
-    if up {
-        inp[12..16].copy_from_slice(&KEYEVENTF_KEYUP.to_ne_bytes()); // dwFlags at 12
-    }
-    inp
-}
-
-fn send_inputs(seq: &[[u8; INPUT_SIZE]]) {
-    unsafe {
-        SendInput(seq.len() as u32, seq.as_ptr() as *const u8, INPUT_SIZE as i32);
-    }
-}
-
-fn key_held(vk: i32) -> bool {
-    unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
-}
-
-/// Tap a key with Ctrl held (synthesizing Ctrl down if the user already
-/// released it), releasing Shift first so Ctrl+C isn't Ctrl+Shift+C.
-fn tap_with_ctrl(vk: i32) {
-    let mut seq: Vec<[u8; INPUT_SIZE]> = Vec::new();
-    if key_held(VK_SHIFT) {
-        seq.push(key_event(VK_SHIFT, true));
-    }
-    let synth_ctrl = !key_held(VK_CONTROL);
-    if synth_ctrl {
-        seq.push(key_event(VK_CONTROL, false));
-    }
-    seq.push(key_event(vk, false));
-    seq.push(key_event(vk, true));
-    if synth_ctrl {
-        seq.push(key_event(VK_CONTROL, true));
-    }
-    send_inputs(&seq);
-}
-
 // ========================= Actions =========================
 
 fn do_push() {
     let Some(h) = get_hid() else {
         return;
     };
-
-    // Clear the clipboard, then copy the current selection via ^c.
-    unsafe {
-        if OpenClipboard(0) != 0 {
-            EmptyClipboard();
-            CloseClipboard();
-        }
-    }
-    tap_with_ctrl(VK_KEY_C);
-
-    // Poll for the fresh clipboard content.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
-    let mut text: Option<String> = None;
-    while std::time::Instant::now() < deadline {
-        if let Some(t) = clipboard_get_text() {
-            if !t.is_empty() {
-                text = Some(t);
-                break;
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(30));
-    }
-    let Some(text) = text else {
+    // Push the clipboard as-is: the user copies the text themselves, so this
+    // is safe everywhere (an injected ^c would SIGINT remote shells over SSH).
+    let Some(text) = clipboard_get_text().filter(|t| !t.is_empty()) else {
         return;
     };
-
     if let Err(_) = push_text(h, &text) {
         hid_invalidate();
     }
@@ -558,11 +488,10 @@ fn do_pull() {
         }
         Ok(None) => {}
         Ok(Some(text)) => {
-            if !clipboard_set_text(&text) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(80));
-            tap_with_ctrl(VK_KEY_V); // paste at the caret
+            // Clipboard only: pasting is left to the user, since terminals
+            // disagree (^v vs Ctrl+Shift+V vs right-click) and mstsc may not
+            // even deliver injected keys.
+            clipboard_set_text(&text);
         }
     }
 }
@@ -670,11 +599,11 @@ fn main() {
         TRAY_HWND.store(hwnd, Ordering::Relaxed);
         add_tray(hwnd);
 
-        // Ctrl+Shift+1 push / Ctrl+Shift+2 pull / Ctrl+Shift+0 exit
-        let mods = MOD_CONTROL | MOD_SHIFT;
-        RegisterHotKey(hwnd, 1, mods, 0x31);
-        RegisterHotKey(hwnd, 2, mods, 0x32);
-        RegisterHotKey(hwnd, 3, mods, 0x30);
+        // Ctrl+Alt+U push clipboard / Ctrl+Alt+D pull to clipboard / Ctrl+Alt+0 exit
+        let mods = MOD_CONTROL | MOD_ALT;
+        RegisterHotKey(hwnd, 1, mods, 0x55); // U
+        RegisterHotKey(hwnd, 2, mods, 0x44); // D
+        RegisterHotKey(hwnd, 3, mods, 0x30); // 0
 
         let mut msg: Msg = std::mem::zeroed();
         while GetMessageW(&mut msg, 0, 0, 0) > 0 {
