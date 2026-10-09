@@ -16,6 +16,28 @@
 #define MACOS_SWITCH_MOVE_COUNT 5
 #define ACCEL_POINTS 7
 
+/* Cross-boundary relative pulse size in physical pixels. Small on purpose:
+   the OS cursor moves by (delta x OS pointer multiplier), so a small delta
+   keeps the landing inside the target screen even if the multiplier is not
+   exactly 1 (pointer speed off notch 6 / EPP quirks), while a full-width
+   slide would undershoot (cursor stuck on the previous screen) or overshoot. */
+#define PORTAL_PULSE_PX 90
+
+/* Fractional remainders of the exact virtual-coordinate accumulation on the
+   relative side display (see update_mouse_position). Bounded by +-side_px. */
+static int32_t rel_rem_x = 0, rel_rem_y = 0;
+
+/* Side display physical pixel size, with fallback for zeroed (pre-v9) config */
+static void side_display_px(uint16_t *width, uint16_t *height) {
+    *width  = global_state.config.side_width_px;
+    *height = global_state.config.side_height_px;
+
+    if (*width == 0)
+        *width = SIDE_DISPLAY_WIDTH_PX;
+    if (*height == 0)
+        *height = SIDE_DISPLAY_HEIGHT_PX;
+}
+
 uint16_t get_jump_threshold(output_t *output, enum screen_pos_e direction) {
     const uint16_t NO_JUMP_THRESHOLD = 0;
 
@@ -169,10 +191,32 @@ enum screen_pos_e update_mouse_position(device_t *state, mouse_values_t *values)
     if (state->mouse_zoom)
         reduce_speed = MOUSE_ZOOM_SCALING_FACTOR;
 
-    /* Calculate movement */
-    float acceleration_factor = calculate_mouse_acceleration_factor(values->move_x, values->move_y);
-    int offset_x = round(values->move_x * acceleration_factor * (current->speed_x >> reduce_speed));
-    int offset_y = round(values->move_y * acceleration_factor * (current->speed_y >> reduce_speed));
+    /* Calculate movement.
+       On the relative side display the OS cursor moves by the RAW deltas
+       (create_mouse_report passes them through unscaled: Speed and firmware
+       acceleration never affect the actual cursor there). The virtual
+       coordinates must therefore accumulate move * 32767 / side_px exactly -
+       with a fractional remainder - or they drift away from the real cursor
+       and the portal triggers fire in the wrong places (cursor "teleporting"
+       to the main display while still in mid-screen on the side display). */
+    int offset_x, offset_y;
+
+    if (state->relative_mouse) {
+        uint16_t aux_w, aux_h;
+        side_display_px(&aux_w, &aux_h);
+
+        int32_t num = (int32_t)values->move_x * MAX_SCREEN_COORD + rel_rem_x;
+        offset_x    = num / (int32_t)aux_w;
+        rel_rem_x   = num % (int32_t)aux_w;
+
+        num       = (int32_t)values->move_y * MAX_SCREEN_COORD + rel_rem_y;
+        offset_y  = num / (int32_t)aux_h;
+        rel_rem_y = num % (int32_t)aux_h;
+    } else {
+        float acceleration_factor = calculate_mouse_acceleration_factor(values->move_x, values->move_y);
+        offset_x = round(values->move_x * acceleration_factor * (current->speed_x >> reduce_speed));
+        offset_y = round(values->move_y * acceleration_factor * (current->speed_y >> reduce_speed));
+    }
 
     /* Determine if our upcoming movement would stay within the screen */
     enum screen_pos_e switch_direction = is_screen_switch_needed(current, state->pointer_x, offset_x);
@@ -245,7 +289,11 @@ void switch_to_another_pc(
     output_mouse_report(&hidden_pointer, state);
     set_active_output(state, output_to);
     state->pointer_x = (direction == LEFT) ? MAX_SCREEN_COORD : MIN_SCREEN_COORD;
-    state->pointer_y = scale_y_coordinate(output->number, 1 - output->number, state);
+
+    /* v3.1: deterministic landing on the main display's bottom-left corner.
+       The previous Y-proportional mapping made the cursor appear at a
+       different spot on every crossing, which proved hard to track visually. */
+    state->pointer_y = MAX_SCREEN_COORD;
 
     /* v3: the target may have been left on its relative extension screen (#4
        in P1, #6 in P2), so reset screen index and coordinate mode explicitly */
@@ -253,31 +301,18 @@ void switch_to_another_pc(
     state->config.output[output_to].screen_index = 1;
 }
 
-/* Side display physical pixel size, with fallback for zeroed (pre-v9) config */
-static void side_display_px(uint16_t *width, uint16_t *height) {
-    *width  = global_state.config.side_width_px;
-    *height = global_state.config.side_height_px;
-
-    if (*width == 0)
-        *width = SIDE_DISPLAY_WIDTH_PX;
-    if (*height == 0)
-        *height = SIDE_DISPLAY_HEIGHT_PX;
-}
-
-/* One large-delta relative report sliding the OS cursor onto the side display.
-   The relative HID interface has 16-bit axes, so a ~1920 px slide fits in a
-   single report (millisecond-level). Buttons forced to 0 to avoid carrying
-   press state across the switch, like the macOS workaround does. */
+/* One relative report sliding the OS cursor across the arrangement boundary
+   onto the side display. The relative HID interface has 16-bit axes; the
+   delta is intentionally small (PORTAL_PULSE_PX) for OS-multiplier robustness.
+   Buttons forced to 0 to avoid carrying press state across the switch, like
+   the macOS workaround does. */
 static void send_relative_pulse(device_t *state, int16_t dx, int16_t dy) {
     mouse_report_t pulse = {.x = dx, .y = dy, .mode = RELATIVE, .buttons = 0};
     output_mouse_report(&pulse, state);
 }
 
-/* #2 (both profiles): main display lower edge -> internal screen right edge.
-   Corner mapping: the exit position along the main display's bottom edge
-   becomes the entry height along the internal screen's right edge (equal
-   proportion) - sweeping the bottom edge slides the cursor down the right
-   edge, and the two screens' shared corner maps onto itself. */
+/* #2 (both profiles): main display lower edge -> internal screen.
+   v3.1: deterministic landing on the internal screen's top-left corner. */
 void switch_main_bottom_to_laptop(device_t *state) {
     int16_t x0 = state->pointer_x;
 
@@ -289,20 +324,20 @@ void switch_main_bottom_to_laptop(device_t *state) {
     state->relative_mouse = false;
     state->config.output[OUTPUT_B].screen_index = 1;
 
-    state->pointer_x = MAX_SCREEN_COORD;
-    state->pointer_y = x0;
+    state->pointer_x = MIN_SCREEN_COORD;
+    state->pointer_y = MIN_SCREEN_COORD;
 }
 
-/* #3 (P1): laptop internal screen upper edge -> side display bottom edge.
+/* #3 (P1): laptop internal screen upper edge -> side display.
    The side display is relative, so the host cursor cannot be placed there
    directly (KB5003637 clamps absolute reports to the main display): park it
-   absolutely on the main display's bottom-left corner, then send one
-   relative pulse across the (bottom-aligned) arrangement boundary onto the
-   side display's bottom edge at the kept X proportion. */
+   absolutely on the main display's left edge (mid height), then send one
+   SMALL relative pulse across the arrangement boundary. The pulse enters
+   through the side display's right edge (physically adjacent to the main
+   display) and lands just inside it at mid height - deterministic, and the
+   small delta stays robust even if the OS pointer multiplier is not 1:1. */
 void switch_laptop_top_to_side(device_t *state) {
     int16_t x0 = state->pointer_x;
-    uint16_t aux_w, aux_h;
-    side_display_px(&aux_w, &aux_h);
 
     /* Pin the leaving cursor on the internal screen's upper edge */
     mouse_report_t park = {.x = x0, .y = MIN_SCREEN_COORD};
@@ -310,47 +345,43 @@ void switch_laptop_top_to_side(device_t *state) {
 
     set_active_output(state, OUTPUT_A);
 
-    /* Absolute park on the main display's bottom-left corner */
-    mouse_report_t corner = {.x = MIN_SCREEN_COORD, .y = MAX_SCREEN_COORD};
+    /* Absolute park on the main display's left edge, mid height */
+    mouse_report_t corner = {.x = MIN_SCREEN_COORD, .y = MAX_SCREEN_COORD / 2};
     output_mouse_report(&corner, state);
 
-    /* One relative pulse across into the side display's bottom edge:
-       dx = x0/32767 * aux_w - (aux_w + 1), ranging from -1 (right edge)
-       to -(aux_w + 1) (left edge) */
-    send_relative_pulse(state,
-                        (int16_t)((int32_t)x0 * aux_w / MAX_SCREEN_COORD - aux_w - 1),
-                        -1);
+    send_relative_pulse(state, -PORTAL_PULSE_PX, 0);
 
     state->relative_mouse = true;
     state->config.output[OUTPUT_A].screen_index = 2;
-    state->pointer_x = x0;
-    state->pointer_y = MAX_SCREEN_COORD;
+
+    uint16_t aux_w, aux_h;
+    side_display_px(&aux_w, &aux_h);
+    state->pointer_x = MAX_SCREEN_COORD - (int32_t)PORTAL_PULSE_PX * MAX_SCREEN_COORD / aux_w;
+    state->pointer_y = MAX_SCREEN_COORD / 2;
 }
 
 /* #4 (P1): side display lower edge -> internal screen upper edge. The leaving
    cursor is already pinned at the side display's bottom edge by Windows (the
    exit was triggered exactly there, and relative mode clamps it); absolute
-   reports would be clamped to the main display, so no park report is sent. */
+   reports would be clamped to the main display, so no park report is sent.
+   v3.1: deterministic landing on the internal screen's top-left corner. */
 void switch_side_bottom_to_laptop(device_t *state) {
-    int16_t x0 = state->pointer_x;
-
     set_active_output(state, OUTPUT_B);
     state->relative_mouse = false;
     state->config.output[OUTPUT_B].screen_index = 1;
 
-    state->pointer_x = x0;
+    state->pointer_x = MIN_SCREEN_COORD;
     state->pointer_y = MIN_SCREEN_COORD;
 }
 
-/* #5 (P2): main display left edge -> side display right edge. Park+pulse
-   variant: the laptop's cursor is parked at the internal screen's top-right
-   corner (absolute), then pulsed straight up along the shared right edge
-   (right edges aligned in the Windows arrangement) onto the side display at
-   the kept height. */
+/* #5 (P2): main display left edge -> side display. Park+pulse variant: the
+   laptop's cursor is parked absolutely on the internal screen's top edge
+   (mid width), then pulsed straight up across the stacked-screens boundary.
+   Lands just inside the side display's bottom edge at mid width - the small
+   delta keeps the landing on the side display even if the OS pointer
+   multiplier is not 1:1. */
 void switch_pc_to_side_horizontal(device_t *state) {
     int16_t y0 = state->pointer_y;
-    uint16_t aux_w, aux_h;
-    side_display_px(&aux_w, &aux_h);
 
     /* Pin the leaving cursor on the main display's left edge */
     mouse_report_t park = {.x = MIN_SCREEN_COORD, .y = y0};
@@ -358,32 +389,32 @@ void switch_pc_to_side_horizontal(device_t *state) {
 
     set_active_output(state, OUTPUT_B);
 
-    /* Absolute park on the internal screen's top-right corner */
-    mouse_report_t corner = {.x = MAX_SCREEN_COORD, .y = MIN_SCREEN_COORD};
+    /* Absolute park on the internal screen's top edge, mid width */
+    mouse_report_t corner = {.x = MAX_SCREEN_COORD / 2, .y = MIN_SCREEN_COORD};
     output_mouse_report(&corner, state);
 
-    /* One relative pulse up onto the side display's right edge at y0:
-       dy = -(1 + (aux_h - 1) * (32767 - y0) / 32767), from -1 (bottom edge)
-       to -aux_h (top edge) */
-    send_relative_pulse(state, 0,
-        -(int16_t)(1 + (int32_t)(aux_h - 1) * (MAX_SCREEN_COORD - y0) / MAX_SCREEN_COORD));
+    send_relative_pulse(state, 0, -PORTAL_PULSE_PX);
 
     state->relative_mouse = true;
     state->config.output[OUTPUT_B].screen_index = 2;
-    state->pointer_x = MAX_SCREEN_COORD;
-    state->pointer_y = y0;
+
+    uint16_t aux_w, aux_h;
+    side_display_px(&aux_w, &aux_h);
+    state->pointer_x = MAX_SCREEN_COORD / 2;
+    state->pointer_y = MAX_SCREEN_COORD - (int32_t)PORTAL_PULSE_PX * MAX_SCREEN_COORD / aux_h;
 }
 
 /* #6 (P2): side display right edge -> main display left edge. Like #4, the
    leaving cursor stays pinned at the side display's right edge (relative
-   mode, clamped by Windows), so no park report is sent. */
+   mode, clamped by Windows), so no park report is sent.
+   v3.1: deterministic landing on the main display's bottom-left corner. */
 void switch_side_to_main_horizontal(device_t *state) {
     set_active_output(state, OUTPUT_A);
     state->relative_mouse = false;
     state->config.output[OUTPUT_A].screen_index = 1;
 
     state->pointer_x = MIN_SCREEN_COORD;
-    state->pointer_y = scale_y_coordinate(OUTPUT_B, OUTPUT_A, state);
+    state->pointer_y = MAX_SCREEN_COORD;
 }
 
 void switch_virtual_desktop_macos(device_t *state, int direction) {

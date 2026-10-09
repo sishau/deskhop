@@ -4,11 +4,12 @@ cmake_minimum_required(VERSION 3.6)
 ## Define e.g. 0.72 as major 0 and minor 72
 # Fork patch releases on top of upstream 0.80: v0.80.1 = V2 portal feature,
 # v0.80.2 = + boot-time layout fix, v0.80.3 = + inter-board text channel,
-# v0.80.4 = + v3 main-display portals (side display always index2/relative).
+# v0.80.4 = + v3 main-display portals (side display always index2/relative),
+# v0.80.5 = + drift-free relative tracking, deterministic corner landings.
 # u16 encoding (see FIRMWARE_VERSION below).
 set(VERSION_MAJOR 0)
 set(VERSION_MINOR 80)
-set(VERSION_PATCH 4)
+set(VERSION_PATCH 5)
 
 ## Release Type Selection
 option(DH_DEBUG "Build a debug version" OFF)
