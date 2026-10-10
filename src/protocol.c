@@ -71,6 +71,11 @@ const field_map_t api_field_map[] = {
     { 85, false, UINT16, 2, offsetof(device_t, config.side_width_px) },
     { 86, false, UINT16, 2, offsetof(device_t, config.side_height_px) },
     { 87, false, UINT16, 2, offsetof(device_t, config.pointer_k_pm) },
+    /* Pointer-scale mirror of the peer (via heartbeat) and our own board role,
+       so the web page can show both boards' k regardless of which one it is
+       connected to. Readonly: the peer's k is edited via proxied SET 87. */
+    { 88, true,  UINT16, 2, offsetof(device_t, peer_k_pm) },
+    { 89, true,  UINT8,  1, offsetof(device_t, board_role) },
 };
 
 const field_map_t* get_field_map_entry(uint32_t index) {

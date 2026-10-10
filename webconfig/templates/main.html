@@ -117,6 +117,19 @@
               {% include "form.html" with context %}
             {% endfor %}
 
+          <h5>Pointer Scale k (per mille, EPP must stay off)</h5>
+          <div class="clearfix">
+            <label class="label-inline" id="kLocalLabel">This board k</label>
+            <input type="number" min="200" max="5000" step="10"
+                   data-key="87" data-type="uint16" onchange="kLocalChanged(this)" />
+          </div>
+          <div class="clearfix">
+            <label class="label-inline" id="kPeerLabel">Peer board k</label>
+            <input type="number" min="200" max="5000" step="10"
+                   data-key="88" data-type="uint16" onchange="kPeerChanged(this)" />
+          </div>
+          <input type="hidden" id="boardRole" data-key="89" data-type="uint8" />
+
           <input type="submit" value="Save" id="submitButton">
         </div>
 

@@ -228,3 +228,52 @@ async function saveHandler() {
 async function wipeConfigHandler() {
   await sendReport(packetType.wipeConfigMsg, [], true);
 }
+
+/* ===== Pointer scale k (field 87, per-board; peer mirror 88, board role 89).
+   These inputs are deliberately NOT .api: the generic machinery writes every
+   change to both boards, while k must differ per board (each board renders
+   its own side display). Local edits write field 87 locally, peer edits are
+   proxied to the other board only. Read populates all three automatically. */
+
+function boardRole() {
+  var el = document.getElementById('boardRole');
+  return el && el.value !== '' ? Number(el.value) : 0;
+}
+
+function refreshKLabels() {
+  var a = boardRole() === 0;
+  document.getElementById('kLocalLabel').textContent =
+    a ? 'Board A k (this board)' : 'Board B k (this board)';
+  document.getElementById('kPeerLabel').textContent =
+    a ? 'Board B k (remote)' : 'Board A k (remote)';
+}
+
+document.getElementById('boardRole').addEventListener('input', refreshKLabels);
+
+async function kLocalChanged(element) {
+  var value = parseInt(element.value);
+  if (!device || !device.opened || !(value > 0))
+    return;
+
+  await device.sendReport(mgmtReportId,
+    makeReport(packetType.setValMsg, packValue(element, 87, 'uint16'), false));
+  await device.sendReport(mgmtReportId,
+    makeReport(packetType.saveConfigMsg, [], false));
+}
+
+async function kPeerChanged(element) {
+  var value = parseInt(element.value);
+  if (!device || !device.opened || !(value > 0))
+    return;
+
+  await device.sendReport(mgmtReportId,
+    makeReport(packetType.setValMsg, packValue(element, 87, 'uint16'), true));
+  await device.sendReport(mgmtReportId,
+    makeReport(packetType.saveConfigMsg, [], true));
+
+  /* The peer broadcasts its k in the 1 Hz heartbeat; fetch the fresh mirror
+     back once it has had time to land. */
+  setTimeout(async () => {
+    await sendReport(packetType.getValMsg, new Uint8Array([88, 0, 0, 0, 0, 0, 0, 0]));
+  }, 2000);
+}
