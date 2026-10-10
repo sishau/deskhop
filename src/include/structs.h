@@ -170,6 +170,11 @@ typedef struct {
     /* Onboard LED blinky (provide feedback when e.g. mouse connected) */
     int32_t  blinks_left;     // How many blink transitions are left
     uint32_t last_led_change; // Timestamp of the last time led state transitioned
+
+    /* Cross-endpoint report ordering: countdown (in queue-task ticks) started
+       whenever an ABSOLUTE report is submitted; RELATIVE reports wait it out
+       so a park (ITF0) can never be overtaken by its pulse (ITF1). */
+    uint8_t abs_settle;
 } device_t;
 /*==============================================================================*/
 

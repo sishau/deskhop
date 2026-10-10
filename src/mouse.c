@@ -19,6 +19,10 @@
    distance to an edge; without a cap the cursor teleports across it in one
    report, which feels like a premature screen switch ("halfway switch"). */
 #define OFFSET_CAP 4096
+/* After an ABSOLUTE report is submitted, hold RELATIVE ones this many queue
+   task ticks (2 kHz -> 5 ms = 5 full-speed USB frames) so the host always
+   consumes the park before its pulse, regardless of endpoint poll order. */
+#define REL_HOLD_TICKS 10
 
 /* Pulse landings aim this many physical pixels short of the shared edge.
    Windows keeps the side display's arrangement position per monitor
@@ -661,12 +665,21 @@ void process_mouse_queue_task(device_t *state) {
     if (tud_suspended())
         tud_remote_wakeup();
 
-    /* If it's not ready, we'll try on the next pass. The absolute-endpoint
-       gate doubles as an ordering guarantee: a relative report that must
-       land after a preceding absolute one (park-then-pulse entry) is only
-       submitted once the absolute transfer has been fetched by the host. */
+    /* Decay the settle window opened by the last ABSOLUTE submission */
+    if (state->abs_settle)
+        state->abs_settle--;
+
+    /* If it's not ready, we'll try on the next pass. Park and pulse travel on
+       DIFFERENT interrupt endpoints (ITF0 absolute / ITF1 relative) - endpoint
+       readiness says nothing about what the host has already consumed, and
+       both endpoints are polled within the same USB frame, so a relative
+       report submitted right after an absolute one can overtake it. The
+       settle window holds RELATIVE reports for a few ms after any ABSOLUTE
+       submission, which strictly orders park-then-pulse portal entries (and
+       is imperceptible: it only ever bites on mode transitions). */
     if (report.mode == RELATIVE) {
-        if (!tud_hid_n_ready(ITF_NUM_HID) || !tud_hid_n_ready(ITF_NUM_HID_REL_M))
+        if (state->abs_settle
+            || !tud_hid_n_ready(ITF_NUM_HID) || !tud_hid_n_ready(ITF_NUM_HID_REL_M))
             return;
     } else if (!tud_hid_n_ready(ITF_NUM_HID))
         return;
@@ -682,8 +695,11 @@ void process_mouse_queue_task(device_t *state) {
         = tud_mouse_report(report.mode, report.buttons, report.x, report.y, report.wheel, report.pan);
 
     /* ... then we can remove it from the queue */
-    if (succeeded)
+    if (succeeded) {
         queue_try_remove(&state->mouse_queue, &report);
+        if (report.mode == ABSOLUTE)
+            state->abs_settle = REL_HOLD_TICKS;
+    }
 }
 
 void queue_mouse_report(mouse_report_t *report, device_t *state) {
