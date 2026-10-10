@@ -374,11 +374,6 @@ void handle_response_byte_msg(uart_packet_t *packet, device_t *state) {
 void handle_heartbeat_msg(uart_packet_t *packet, device_t *state) {
     uint16_t other_running_version = packet->data16[0];
 
-    /* Piggybacked pointer-scale calibration of the peer machine. Zero means
-       the peer predates v0.80.9 - assume 1:1 (1000). */
-    if (packet->data16[1])
-        state->peer_k_pm = packet->data16[1];
-
     /* Compile-time kill-switch: never kick off a cross-device firmware copy */
     if (DISABLE_FW_UPGRADE)
         return;

@@ -47,5 +47,14 @@ typedef struct {
     uint8_t os;                // Operating system on this output
     uint8_t pos;               // Screen position on this output
     uint8_t mouse_park_pos;    // Where the mouse goes after switch
+
+    /* OS pointer scale (permille, 1000 = 1 count = 1 px) of the machine this
+       output belongs to, measured by tools/calibrate_pointer_k.py. Required
+       whenever that machine's pointer speed slider is not at 1:1 (EPP must
+       stay off). Used by the side display ledger and pulse sizing; both
+       boards carry both outputs' values in their mirrored config, so the
+       pulse sender looks up the target machine's k locally. */
+    uint16_t pointer_k_pm;
+
     screensaver_t screensaver; // Screensaver parameters for this output
 } output_t;

@@ -220,11 +220,13 @@ float calculate_mouse_acceleration_factor(int32_t offset_x, int32_t offset_y) {
    The math runs on the mouse board, but the OS applying the scale is the
    owner's, so cross-profile paths need the peer's value (via heartbeat). */
 static uint16_t side_k_pm(device_t *state) {
+    /* k describes the machine that renders the side display (its OS pointer
+       scale). Both boards carry both outputs' k in their mirrored config,
+       so the pulse sender looks up the target machine's k locally - no
+       inter-board sync needed. */
     uint8_t owner = (state->layout_profile == LAYOUT_PROFILE_HOST) ? OUTPUT_A : OUTPUT_B;
-    uint16_t k = (owner == state->board_role)
-        ? state->config.pointer_k_pm
-        : state->peer_k_pm;
-    return k ? k : 1000;   /* 0 = unknown (pre-v0.80.9 peer) - assume 1:1 */
+    uint16_t k = state->config.output[owner].pointer_k_pm;
+    return k ? k : 1000;   /* 0 = unset - assume 1:1 */
 }
 
 /* Scan one axis for a boundary crossing. Returns the fraction t ∈ (0,1] of

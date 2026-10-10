@@ -19,8 +19,10 @@
    Bumping the version invalidates the stored config on first boot (defaults are
    reloaded) - users re-set threshold/speed once after flashing v0.80.4.
    v10 (v0.80.9): + pointer_k_pm (OS pointer scale permille for the side
-   display ledger / pulse math, see tools/calibrate_pointer_k.py). */
-#define CURRENT_CONFIG_VERSION 10
+   display ledger / pulse math, see tools/calibrate_pointer_k.py).
+   v11: pointer_k_pm moved into output_t (per-machine value, mirrored to both
+   boards like every output field); heartbeat piggyback + peer_k_pm dropped. */
+#define CURRENT_CONFIG_VERSION 11
 
 /*==============================================================================
  *  Configuration Data

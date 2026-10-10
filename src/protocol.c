@@ -33,6 +33,7 @@ const field_map_t api_field_map[] = {
     /* Until we increase the payload size from 8 bytes, clamp to avoid exceeding the field size */
     { 21, false, UINT64, 7, offsetof(device_t, config.output[0].screensaver.idle_time_us) },
     { 22, false, UINT64, 7, offsetof(device_t, config.output[0].screensaver.max_time_us) },
+    { 23, false, UINT16, 2, offsetof(device_t, config.output[0].pointer_k_pm) },
 
     /* Output B */
     { 40, false, UINT32, 4, offsetof(device_t, config.output[1].number) },
@@ -48,6 +49,7 @@ const field_map_t api_field_map[] = {
     { 50, false, UINT8,  1, offsetof(device_t, config.output[1].screensaver.only_if_inactive) },
     { 51, false, UINT64, 7, offsetof(device_t, config.output[1].screensaver.idle_time_us) },
     { 52, false, UINT64, 7, offsetof(device_t, config.output[1].screensaver.max_time_us) },
+    { 53, false, UINT16, 2, offsetof(device_t, config.output[1].pointer_k_pm) },
 
     /* Common config */
     { 70, false, UINT32, 4, offsetof(device_t, config.version) },
@@ -70,12 +72,6 @@ const field_map_t api_field_map[] = {
     { 84, false, UINT8,  1, offsetof(device_t, config.led_mode) },
     { 85, false, UINT16, 2, offsetof(device_t, config.side_width_px) },
     { 86, false, UINT16, 2, offsetof(device_t, config.side_height_px) },
-    { 87, false, UINT16, 2, offsetof(device_t, config.pointer_k_pm) },
-    /* Pointer-scale mirror of the peer (via heartbeat) and our own board role,
-       so the web page can show both boards' k regardless of which one it is
-       connected to. Readonly: the peer's k is edited via proxied SET 87. */
-    { 88, true,  UINT16, 2, offsetof(device_t, peer_k_pm) },
-    { 89, true,  UINT8,  1, offsetof(device_t, board_role) },
 };
 
 const field_map_t* get_field_map_entry(uint32_t index) {

@@ -91,13 +91,6 @@ typedef struct {
     uint16_t side_width_px;
     uint16_t side_height_px;
 
-    /* OS pointer scale (permille, 1000 = 1 count = 1 px) of THIS machine,
-       measured by tools/calibrate_pointer_k.py. Required whenever the
-       pointer speed slider is not at the 1:1 position (EPP must stay off).
-       Used by the side display ledger and pulse sizing; rides to the peer
-       board inside the heartbeat packet. */
-    uint16_t pointer_k_pm;
-
     // Keep checksum at the end of the struct
     uint32_t checksum;
 } config_t;
@@ -163,7 +156,6 @@ typedef struct {
     bool corridor_mode;      // v4: cursor inside the virtual corridor, no reports
     bool gaming_mode;        // True when gaming mode is on (relative passthru + lock)
     uint8_t layout_profile;  // Active layout profile (enum layout_profile_e), RAM only, never stored in flash
-    uint16_t peer_k_pm;      // Pointer scale (permille) of the peer machine, from heartbeat data16[1]; 1000 if unknown
     bool config_mode_active; // True when config mode is active
     bool digitizer_active;   // True when digitizer Win/Mac workaround is active
 
