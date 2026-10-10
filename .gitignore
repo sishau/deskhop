@@ -1,3 +1,10 @@
 build
 
 .idea/
+.workbuddy/
+
+# update_disk.py leaves a backup next to the image
+disk/disk.img.bak
+
+# python bytecode from the calibration tools
+__pycache__/
