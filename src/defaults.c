@@ -64,4 +64,5 @@ const config_t default_config = {
     .led_mode = LED_ACTIVE_OUTPUT,
     .side_width_px = SIDE_DISPLAY_WIDTH_PX,
     .side_height_px = SIDE_DISPLAY_HEIGHT_PX,
+    .pointer_k_pm = POINTER_K_PM,
 };

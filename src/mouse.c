@@ -212,6 +212,18 @@ float calculate_mouse_acceleration_factor(int32_t offset_x, int32_t offset_y) {
     return lower->factor + interpolation_pos * (upper->factor - lower->factor);
 }
 
+/* Pointer-scale calibration (permille, 1000 = 1 count = 1 px) of the machine
+   that RENDERS the side display's reports - its owner in the active profile.
+   The math runs on the mouse board, but the OS applying the scale is the
+   owner's, so cross-profile paths need the peer's value (via heartbeat). */
+static uint16_t side_k_pm(device_t *state) {
+    uint8_t owner = (state->layout_profile == LAYOUT_PROFILE_HOST) ? OUTPUT_A : OUTPUT_B;
+    uint16_t k = (owner == state->board_role)
+        ? state->config.pointer_k_pm
+        : state->peer_k_pm;
+    return k ? k : 1000;   /* 0 = unknown (pre-v0.80.9 peer) - assume 1:1 */
+}
+
 /* Scan one axis for a boundary crossing. Returns the fraction t ∈ (0,1] of
    the offset at which the (threshold) boundary is reached, or 0 = no
    crossing (wall, not reached, or blocked by a held mouse button). */
@@ -293,19 +305,20 @@ static crossing_t detect_and_update(device_t *state, mouse_values_t *values) {
     int32_t ox, oy;
 
     if (cell == CELL_SIDE) {
-        /* Relative side display: the OS cursor moves by the RAW deltas
-           (Speed / firmware acceleration never apply there), so the plane
-           accumulates move * 32767 / side_px exactly, with remainder. */
+        /* Relative side display: the OS cursor moves by the RAW deltas scaled
+           by the pointer multiplier k (EPP off = constant), so the plane
+           accumulates move * k * 32767 / side_px exactly, with remainder. */
         uint16_t aux_w, aux_h;
         side_display_px(&aux_w, &aux_h);
+        uint16_t k = side_k_pm(state);
 
-        int32_t num = (int32_t)values->move_x * MAX_SCREEN_COORD + rel_rem_x;
-        ox          = num / (int32_t)aux_w;
-        rel_rem_x   = num % (int32_t)aux_w;
+        int64_t num = (int64_t)values->move_x * k * MAX_SCREEN_COORD + rel_rem_x;
+        ox          = (int32_t)(num / ((int64_t)aux_w * 1000));
+        rel_rem_x   = (int32_t)(num % ((int64_t)aux_w * 1000));
 
-        num        = (int32_t)values->move_y * MAX_SCREEN_COORD + rel_rem_y;
-        oy         = num / (int32_t)aux_h;
-        rel_rem_y  = num % (int32_t)aux_h;
+        num        = (int64_t)values->move_y * k * MAX_SCREEN_COORD + rel_rem_y;
+        oy         = (int32_t)(num / ((int64_t)aux_h * 1000));
+        rel_rem_y  = (int32_t)(num % ((int64_t)aux_h * 1000));
     } else {
         float acceleration_factor =
             calculate_mouse_acceleration_factor(values->move_x, values->move_y);
@@ -444,10 +457,15 @@ static void pulse_entry_internal_to_side(device_t *state, int32_t x) {  /* P1, T
     output_mouse_report(&park, state);
 
     /* One pulse across the arrangement boundary, landing a few pixels short
-       of the side display's bottom edge at the kept column proportion */
+       of the side display's bottom edge at the kept column proportion. The
+       pulse is sized in px, then converted to counts via the target OS
+       pointer scale k (counts = px * 1000 / k). */
+    uint16_t k = side_k_pm(state);
     int32_t col = x + MAX_SCREEN_COORD;   /* kept column, 0..MAX proportion */
-    int32_t dx = (int32_t)((int64_t)col * aux_w / MAX_SCREEN_COORD) - aux_w;
-    send_relative_pulse(state, (int16_t)dx, -(1 + PULSE_EDGE_MARGIN_PX));
+    int32_t dx_px = (int32_t)((int64_t)col * aux_w / MAX_SCREEN_COORD) - aux_w;
+    send_relative_pulse(state,
+                        (int16_t)((int64_t)dx_px * 1000 / k),
+                        (int16_t)(-(int64_t)(1 + PULSE_EDGE_MARGIN_PX) * 1000 / k));
 
     set_plane_position(state, x,
         MAX_SCREEN_COORD - (1 + PULSE_EDGE_MARGIN_PX) * MAX_SCREEN_COORD / aux_h);
@@ -468,15 +486,17 @@ static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LE
 
     /* One pulse up across the stacked boundary, landing at the kept height
        on the side display's right edge - but never closer to the shared
-       edge than the safety margin (same rationale as the P1 pulse) */
-    int32_t dy = (int32_t)((int64_t)(y - MAX_SCREEN_COORD) * aux_h / MAX_SCREEN_COORD);
-    if (dy > -(1 + PULSE_EDGE_MARGIN_PX))
-        dy = -(1 + PULSE_EDGE_MARGIN_PX);
-    send_relative_pulse(state, 0, (int16_t)dy);
+       edge than the safety margin (same rationale as the P1 pulse). Sized
+       in px, converted to counts via the target OS pointer scale k. */
+    uint16_t k = side_k_pm(state);
+    int32_t dy_px = (int32_t)((int64_t)(y - MAX_SCREEN_COORD) * aux_h / MAX_SCREEN_COORD);
+    if (dy_px > -(1 + PULSE_EDGE_MARGIN_PX))
+        dy_px = -(1 + PULSE_EDGE_MARGIN_PX);
+    send_relative_pulse(state, 0, (int16_t)((int64_t)dy_px * 1000 / k));
 
     /* Anchor the ledger at the row we actually aimed for */
     set_plane_position(state, -1,
-        MAX_SCREEN_COORD + (int32_t)((int64_t)dy * MAX_SCREEN_COORD / aux_h));
+        MAX_SCREEN_COORD + (int32_t)((int64_t)dy_px * MAX_SCREEN_COORD / aux_h));
 }
 
 static void handle_crossing(device_t *state, plane_cell_e from, crossing_t *c) {

@@ -104,6 +104,11 @@
 #define SIDE_DISPLAY_WIDTH_PX 1920
 #define SIDE_DISPLAY_HEIGHT_PX 1080
 
+/* Default OS pointer scale in permille (1000 = 1 count = 1 px). Flash-stored
+   (config v10, field 87); measure the real value per machine with
+   tools/calibrate_pointer_k.py and set it via the webconfig API. */
+#define POINTER_K_PM 1000
+
 /* Mouse acceleration */
 #define ENABLE_ACCELERATION 1
 

@@ -8,11 +8,14 @@ cmake_minimum_required(VERSION 3.6)
 # v0.80.6 = + v4 signed plane model (virtual corridor, exact pulse landings),
 # v0.80.7 = + natural-handoff edges fire at the exact border (no threshold gap),
 # v0.80.8 = + pulse landings aim short of the shared edge (arrangement-offset
-#           margin), per-mode endpoint ready checks in the mouse queue task.
+#           margin), per-mode endpoint ready checks in the mouse queue task,
+# v0.80.9 = + pointer-scale calibration k (config v10): side-display ledger
+#           and pulse sizing divide/multiply by the target OS pointer scale,
+#           exchanged between boards via heartbeat data16[1].
 # u16 encoding (see FIRMWARE_VERSION below).
 set(VERSION_MAJOR 0)
 set(VERSION_MINOR 80)
-set(VERSION_PATCH 8)
+set(VERSION_PATCH 9)
 
 ## Release Type Selection
 option(DH_DEBUG "Build a debug version" OFF)

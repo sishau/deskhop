@@ -70,6 +70,7 @@ const field_map_t api_field_map[] = {
     { 84, false, UINT8,  1, offsetof(device_t, config.led_mode) },
     { 85, false, UINT16, 2, offsetof(device_t, config.side_width_px) },
     { 86, false, UINT16, 2, offsetof(device_t, config.side_height_px) },
+    { 87, false, UINT16, 2, offsetof(device_t, config.pointer_k_pm) },
 };
 
 const field_map_t* get_field_map_entry(uint32_t index) {

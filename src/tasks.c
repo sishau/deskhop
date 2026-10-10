@@ -163,6 +163,7 @@ void heartbeat_output_task(device_t *state) {
         .type = HEARTBEAT_MSG,
         .data16 = {
             [0] = state->_running_fw.version,
+            [1] = state->config.pointer_k_pm,  /* pointer-scale calibration */
             [2] = state->active_output,
         },
     };
