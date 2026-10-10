@@ -54,7 +54,7 @@ OUTPUT_ = [
     FormField(1, "Screen Count", 1, {1: "1", 2: "2", 3: "3"}, "uint32"),
     FormField(2, "Speed X", 16, {"min": 1, "max": 100}, "int32", "range"),
     FormField(3, "Speed Y", 16, {"min": 1, "max": 100}, "int32", "range"),
-    FormField(13, "Pointer k (permille, EPP off)", 1000, {"min": 200, "max": 5000}, "uint16"),
+    FormField(13, "Pointer k (permille, EPP off)", 1000, {}, "uint16"),
     FormField(4, "Border Top", None, {}, "int32"),
     FormField(5, "Border Bottom", None, {}, "int32"),
     FormField(6, "Operating System", 1, {1: "Linux", 2: "MacOS", 3: "Windows", 4: "Android", 255: "Other"}, "uint8"),

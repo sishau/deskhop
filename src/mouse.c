@@ -226,7 +226,11 @@ static uint16_t side_k_pm(device_t *state) {
        inter-board sync needed. */
     uint8_t owner = (state->layout_profile == LAYOUT_PROFILE_HOST) ? OUTPUT_A : OUTPUT_B;
     uint16_t k = state->config.output[owner].pointer_k_pm;
-    return k ? k : 1000;   /* 0 = unset - assume 1:1 */
+    /* 0 = unset (default); anything outside the sane calibration range is
+       treated as 1:1 rather than blowing up the counts conversion. */
+    if (k < 200 || k > 5000)
+        k = 1000;
+    return k;
 }
 
 /* Scan one axis for a boundary crossing. Returns the fraction t ∈ (0,1] of
