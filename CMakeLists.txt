@@ -6,11 +6,13 @@ cmake_minimum_required(VERSION 3.6)
 # v0.80.4 = + v3 main-display portals (side display always index2/relative),
 # v0.80.5 = + drift-free relative tracking, deterministic corner landings,
 # v0.80.6 = + v4 signed plane model (virtual corridor, exact pulse landings),
-# v0.80.7 = + natural-handoff edges fire at the exact border (no threshold gap).
+# v0.80.7 = + natural-handoff edges fire at the exact border (no threshold gap),
+# v0.80.8 = + pulse landings aim short of the shared edge (arrangement-offset
+#           margin), per-mode endpoint ready checks in the mouse queue task.
 # u16 encoding (see FIRMWARE_VERSION below).
 set(VERSION_MAJOR 0)
 set(VERSION_MINOR 80)
-set(VERSION_PATCH 7)
+set(VERSION_PATCH 8)
 
 ## Release Type Selection
 option(DH_DEBUG "Build a debug version" OFF)

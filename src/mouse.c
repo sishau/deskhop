@@ -20,6 +20,15 @@
    report, which feels like a premature screen switch ("halfway switch"). */
 #define OFFSET_CAP 4096
 
+/* Pulse landings aim this many physical pixels short of the shared edge.
+   Windows keeps the side display's arrangement position per monitor
+   identity, and the KVM box's faked EDID can re-enumerate with a few
+   pixels of vertical offset: a landing exactly ON the shared edge then
+   falls outside the side display, and the OS clamps the cursor back onto
+   the primary - the "pulse did nothing" symptom. Aiming short of the edge
+   makes the landing immune to +-PULSE_EDGE_MARGIN_PX of arrangement slop. */
+#define PULSE_EDGE_MARGIN_PX 7
+
 /* Fractional remainders of the exact virtual-coordinate accumulation on the
    relative side display (see detect_and_update). Bounded by +-side_px. */
 static int32_t rel_rem_x = 0, rel_rem_y = 0;
@@ -434,13 +443,14 @@ static void pulse_entry_internal_to_side(device_t *state, int32_t x) {  /* P1, T
                            .mode = ABSOLUTE, .buttons = 0};
     output_mouse_report(&park, state);
 
-    /* One pulse across the arrangement boundary, landing at the same column
-       proportion on the side display's bottom edge (bottom-aligned rows) */
+    /* One pulse across the arrangement boundary, landing a few pixels short
+       of the side display's bottom edge at the kept column proportion */
     int32_t col = x + MAX_SCREEN_COORD;   /* kept column, 0..MAX proportion */
     int32_t dx = (int32_t)((int64_t)col * aux_w / MAX_SCREEN_COORD) - aux_w;
-    send_relative_pulse(state, (int16_t)dx, -1);
+    send_relative_pulse(state, (int16_t)dx, -(1 + PULSE_EDGE_MARGIN_PX));
 
-    set_plane_position(state, x, MAX_SCREEN_COORD - MAX_SCREEN_COORD / aux_h);
+    set_plane_position(state, x,
+        MAX_SCREEN_COORD - (1 + PULSE_EDGE_MARGIN_PX) * MAX_SCREEN_COORD / aux_h);
 }
 
 static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LEFT */
@@ -457,13 +467,16 @@ static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LE
     output_mouse_report(&park, state);
 
     /* One pulse up across the stacked boundary, landing at the kept height
-       on the side display's right edge (right-aligned columns) */
+       on the side display's right edge - but never closer to the shared
+       edge than the safety margin (same rationale as the P1 pulse) */
     int32_t dy = (int32_t)((int64_t)(y - MAX_SCREEN_COORD) * aux_h / MAX_SCREEN_COORD);
-    if (dy > -1)
-        dy = -1;
+    if (dy > -(1 + PULSE_EDGE_MARGIN_PX))
+        dy = -(1 + PULSE_EDGE_MARGIN_PX);
     send_relative_pulse(state, 0, (int16_t)dy);
 
-    set_plane_position(state, -1, y);
+    /* Anchor the ledger at the row we actually aimed for */
+    set_plane_position(state, -1,
+        MAX_SCREEN_COORD + (int32_t)((int64_t)dy * MAX_SCREEN_COORD / aux_h));
 }
 
 static void handle_crossing(device_t *state, plane_cell_e from, crossing_t *c) {
@@ -630,8 +643,14 @@ void process_mouse_queue_task(device_t *state) {
     if (tud_suspended())
         tud_remote_wakeup();
 
-    /* If it's not ready, we'll try on the next pass */
-    if (!tud_hid_n_ready(ITF_NUM_HID))
+    /* If it's not ready, we'll try on the next pass. The absolute-endpoint
+       gate doubles as an ordering guarantee: a relative report that must
+       land after a preceding absolute one (park-then-pulse entry) is only
+       submitted once the absolute transfer has been fetched by the host. */
+    if (report.mode == RELATIVE) {
+        if (!tud_hid_n_ready(ITF_NUM_HID) || !tud_hid_n_ready(ITF_NUM_HID_REL_M))
+            return;
+    } else if (!tud_hid_n_ready(ITF_NUM_HID))
         return;
 
     /* If the interface is configured as a keyboard in boot protocol, discard mouse data. */
