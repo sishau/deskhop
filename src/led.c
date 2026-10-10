@@ -90,6 +90,15 @@ void blink_led(device_t *state) {
     /* Since LEDs might be ON previously, we go OFF, ON, OFF, ON, OFF */
     state->blinks_left     = 5;
     state->last_led_change = time_us_32();
+    state->kbd_blink       = true;
+}
+
+/* Onboard LED only - used where flashing the keyboard LEDs (Num/Caps/Scroll
+   on the remote machine) would be disruptive, e.g. clipboard transfers. */
+void blink_led_onboard(device_t *state) {
+    state->blinks_left     = 5;
+    state->last_led_change = time_us_32();
+    state->kbd_blink       = false;
 }
 
 void led_sync_task(device_t *state) {
@@ -119,10 +128,10 @@ void led_blinking_task(device_t *state) {
     /* Toggle the LED state */
     uint8_t new_led_state = toggle_led();
 
-    /* Also keyboard leds (if it's connected locally) since on-board leds are not visible */
+    /* Also keyboard leds (if it's connected locally and this blink opted in) */
     leds = new_led_state * 0x07; /* Numlock, capslock, scrollock */
 
-    if (state->keyboard_connected)
+    if (state->kbd_blink && state->keyboard_connected)
         set_keyboard_leds(leds, state);
 
     /* Decrement the counter and update the last-changed timestamp */

@@ -32,5 +32,6 @@ extern device_t global_state;
  *==============================================================================*/
 
 void    blink_led(device_t *);
+void    blink_led_onboard(device_t *);  // onboard LED only, no keyboard-LED mirroring
 void    restore_leds(device_t *);
 uint8_t toggle_led(void);

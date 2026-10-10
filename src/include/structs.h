@@ -162,6 +162,7 @@ typedef struct {
     /* Onboard LED blinky (provide feedback when e.g. mouse connected) */
     int32_t  blinks_left;     // How many blink transitions are left
     uint32_t last_led_change; // Timestamp of the last time led state transitioned
+    bool     kbd_blink;       // Whether the running blink also mirrors onto keyboard LEDs
 
     /* Cross-endpoint report ordering: countdown (in queue-task ticks) started
        whenever an ABSOLUTE report is submitted; RELATIVE reports wait it out
