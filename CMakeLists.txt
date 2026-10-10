@@ -2,20 +2,19 @@ cmake_minimum_required(VERSION 3.6)
 
 ## Version Configuration.
 ## Define e.g. 0.72 as major 0 and minor 72
-# Fork patch releases on top of upstream 0.80: v0.80.1 = V2 portal feature,
-# v0.80.4 = + v3 main-display portals (side display always index2/relative),
-# v0.80.5 = + drift-free relative tracking, deterministic corner landings,
-# v0.80.6 = + v4 signed plane model (virtual corridor, exact pulse landings),
-# v0.80.7 = + natural-handoff edges fire at the exact border (no threshold gap),
-# v0.80.8 = + pulse landings aim short of the shared edge (arrangement-offset
-#           margin), per-mode endpoint ready checks in the mouse queue task,
-# v0.80.9 = + pointer-scale calibration k (config v10): side-display ledger
-#           and pulse sizing divide/multiply by the target OS pointer scale,
-#           exchanged between boards via heartbeat data16[1].
-# u16 encoding (see FIRMWARE_VERSION below).
+# Fork releases, counter reset 2026-10-10 (post code-review cleanup):
+# v0.80.1 = v4 signed plane model (virtual corridor, exact pulse landings),
+#           natural-handoff edges at the exact border, pulse edge margin,
+#           pointer-scale calibration k (config v10), review cleanup.
+# History note: earlier fork firmware used u16 = m*1000 + mi*10 + p + 100
+# (901..909 for v0.80.1..v0.80.9). The +100 bias is dropped now, so the
+# numbering restarts at 801 = v0.80.1. Boards still running 90x firmware
+# MUST be flashed via BOOTSEL with both boards powered off - a 90x board
+# would otherwise "upgrade" an 801 board backwards over the heartbeat.
+# u16 encoding: major * 1000 + minor * 10 + patch (see FIRMWARE_VERSION below).
 set(VERSION_MAJOR 0)
 set(VERSION_MINOR 80)
-set(VERSION_PATCH 9)
+set(VERSION_PATCH 1)
 
 ## Release Type Selection
 option(DH_DEBUG "Build a debug version" OFF)
@@ -150,8 +149,8 @@ pico_set_linker_script(${binary} ${CMAKE_SOURCE_DIR}/misc/memory_map.ld)
 ## Build other file formats as well
 pico_add_extra_outputs(${binary})
 
-# For internal firmware use, three-part u16: 0.80.2 -> 0*1000 + 80*10 + 2 + 100 = 902
-math(EXPR FIRMWARE_VERSION "${VERSION_MAJOR} * 1000 + ${VERSION_MINOR} * 10 + ${VERSION_PATCH} + 100")
+# For internal firmware use, three-part u16: 0.80.1 -> 0*1000 + 80*10 + 1 = 801
+math(EXPR FIRMWARE_VERSION "${VERSION_MAJOR} * 1000 + ${VERSION_MINOR} * 10 + ${VERSION_PATCH}")
 
 ## Post-Build Commands
 add_custom_command(
