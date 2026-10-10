@@ -422,6 +422,10 @@ void set_active_output(device_t *state, uint8_t new_output) {
 void apply_layout_profile(device_t *state, uint8_t profile) {
     state->layout_profile = profile;
 
+    /* Persist across the soft reboots that enter/exit config mode (cold boot
+       reads garbage here and falls back to HOST in setup.c). */
+    watchdog_hw->scratch[7] = profile_scratch_value(profile);
+
     for (int i = 0; i < NUM_SCREENS; i++) {
         output_t *output = &state->config.output[i];
         output->screen_count = (i == OUTPUT_A) ? 2 - profile : 1 + profile;

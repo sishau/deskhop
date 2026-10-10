@@ -228,3 +228,17 @@ async function saveHandler() {
 async function wipeConfigHandler() {
   await sendReport(packetType.wipeConfigMsg, [], true);
 }
+
+/* Layout profile display (readonly field 89, populated on Read): spells out
+   the screen arrangement of the active profile so the Output A / Output B
+   columns are unambiguous whichever board the page is connected to. */
+document.getElementById('layoutProfile').addEventListener('input', function () {
+  const info = document.getElementById('profileInfo');
+  if (this.value === '' || this.value === null) {
+    info.textContent = '(press Read)';
+  } else {
+    info.textContent = Number(this.value) === 0
+      ? 'Profile 1 (HOST): Output A = 2 screens (main + side) · Output B = 1 screen (internal)'
+      : 'Profile 2 (LAPTOP): Output A = 1 screen (main) · Output B = 2 screens (side + internal)';
+  }
+});

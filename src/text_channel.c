@@ -79,7 +79,9 @@ static void tc_rx_data(const uint8_t *data) {
 
 /* UART packets relayed by the other board. */
 void handle_text_channel_msg(uart_packet_t *pkt, device_t *state) {
-    (void)state;
+    /* Activity indicator: blink while a transfer is in flight so the user
+       can tell when it is done (blinks stop shortly after the last packet). */
+    blink_led(state);
 
     switch (pkt->type) {
         case TEXT_BEGIN_MSG:
@@ -100,6 +102,9 @@ void handle_text_channel_msg(uart_packet_t *pkt, device_t *state) {
 /* USB SET_REPORT chunks from the local host. The sending board never buffers
    text itself, it just relays it to the other board over the UART. */
 void tc_handle_usb_push(uart_packet_t *pkt) {
+    /* Activity indicator, same rationale as the receiving side. */
+    blink_led(&global_state);
+
     switch (pkt->type) {
         case TC_USB_PUSH_BEGIN:
             queue_packet(pkt->data, TEXT_BEGIN_MSG, PACKET_DATA_LENGTH);
@@ -130,6 +135,9 @@ uint16_t tc_get_report(uint8_t *buffer, uint16_t len) {
         /* Nothing buffered - tell the host there is nothing to pull. */
         pkt.type = TC_USB_PULL_EMPTY;
     } else {
+        /* Activity indicator while the pull side drains the buffer. */
+        blink_led(&global_state);
+
         uint16_t remain = tc_tx.len - tc_tx.offset;
         uint16_t chunk = (TC_CHUNK_PAYLOAD < remain) ? TC_CHUNK_PAYLOAD : remain;
 

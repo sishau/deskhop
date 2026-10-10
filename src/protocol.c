@@ -72,6 +72,9 @@ const field_map_t api_field_map[] = {
     { 84, false, UINT8,  1, offsetof(device_t, config.led_mode) },
     { 85, false, UINT16, 2, offsetof(device_t, config.side_width_px) },
     { 86, false, UINT16, 2, offsetof(device_t, config.side_height_px) },
+    /* Active layout profile (0=HOST/P1, 1=LAPTOP/P2), RAM-only. Readonly: the
+       page shows it so the per-output screen arrangement is evident. */
+    { 89, true,  UINT8,  1, offsetof(device_t, layout_profile) },
 };
 
 const field_map_t* get_field_map_entry(uint32_t index) {

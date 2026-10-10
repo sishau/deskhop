@@ -113,6 +113,12 @@
 
           <h3>Common Config</h3>
 
+          <div class="clearfix" title="Screen arrangement of the active layout profile">
+            <label class="label-inline">Layout Profile</label>
+            <span id="profileInfo" style="font-weight: bold;">(press Read)</span>
+            <input type="hidden" class="api" id="layoutProfile" data-key="89" data-type="uint8" />
+          </div>
+
             {% for item in config %}
               {% include "form.html" with context %}
             {% endfor %}

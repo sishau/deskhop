@@ -39,9 +39,15 @@ int main(void) {
     // Initial board setup
     initial_setup(device);
 
-    // Layout profile owns screen_count from power-on (v2): default HOST = {A:2, B:1},
-    // overriding whatever screen counts webconfig had stored (RAM-only profile, always HOST at boot)
-    apply_layout_profile(device, LAYOUT_PROFILE_HOST);
+    // Layout profile owns screen_count from power-on (v2). Restore the last
+    // active profile if this warm boot came from a config-mode round trip
+    // (watchdog scratch survives watchdog reboots, reads garbage on cold
+    // power-up); otherwise default HOST = {A:2, B:1}, overriding whatever
+    // screen counts webconfig had stored (RAM-only profile).
+    uint32_t saved_profile = watchdog_hw->scratch[7];
+    apply_layout_profile(device,
+        (saved_profile >> 4) == (PROFILE_SCRATCH_BASE >> 4) ? (saved_profile & 1)
+                                                            : LAYOUT_PROFILE_HOST);
 
     // Initial state, A is the default output
     set_active_output(device, OUTPUT_A);

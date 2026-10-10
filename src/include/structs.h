@@ -214,6 +214,16 @@ enum layout_profile_e {
     LAYOUT_PROFILE_LAPTOP = 1,
 };
 
+/* The active profile is RAM-only, so it would otherwise be lost by the soft
+   reboots that enter/exit config mode. Watchdog scratch registers survive a
+   watchdog reboot (RP2040 2.8.1.1) but read as garbage/0 after a cold power
+   cycle - hence the magic guard. Low bit = profile. */
+#define PROFILE_SCRATCH_BASE 0xCAFEF00Cu /* | profile */
+
+static inline uint32_t profile_scratch_value(uint8_t profile) {
+    return PROFILE_SCRATCH_BASE | (profile & 1);
+}
+
 enum screensaver_mode_e {
     DISABLED   = 0,
     PONG       = 1,
