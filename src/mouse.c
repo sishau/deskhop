@@ -221,10 +221,18 @@ static float axis_scan(device_t *state, plane_cell_e cell, bool horizontal,
         if (!*natural && state->mouse_buttons)
             return 0.0f;   /* no cross-PC jumps while dragging */
 
-        /* Boundary x = 0: left column ends at -1, right column starts at 0 */
-        need = (*direction == LEFT)
-            ? -1 - (int32_t)global_state.config.jump_threshold
-            : (int32_t)global_state.config.jump_threshold;
+        /* Boundary x = 0: left column ends at -1, right column starts at 0.
+           Natural handoffs sit on a physical edge the OS cursor crosses
+           immediately, so they fire at the exact border - a threshold gap
+           here would pin the cursor on the leaving edge (absolute reports
+           commanding it back) and mismatch the anchor by threshold/scale.
+           Only gated cross-PC edges keep the jump_threshold margin. */
+        need = (*direction == LEFT) ? -1 : 0;
+        if (!*natural) {
+            need += (*direction == LEFT)
+                ? -(int32_t)global_state.config.jump_threshold
+                : (int32_t)global_state.config.jump_threshold;
+        }
         reach = state->plane_x + offset;
         if ((*direction == LEFT) ? (reach > need) : (reach < need))
             return 0.0f;
@@ -235,10 +243,14 @@ static float axis_scan(device_t *state, plane_cell_e cell, bool horizontal,
         if (!*natural && state->mouse_buttons)
             return 0.0f;
 
-        /* Boundary y = MAX / MAX+1 between the two rows */
-        need = (*direction == BOTTOM)
-            ? BOTTOM_ROW_MIN + (int32_t)global_state.config.jump_threshold
-            : MAX_SCREEN_COORD - (int32_t)global_state.config.jump_threshold;
+        /* Boundary y = MAX / MAX+1 between the two rows; same natural/gated
+           rule as the horizontal boundary above. */
+        need = (*direction == BOTTOM) ? BOTTOM_ROW_MIN : MAX_SCREEN_COORD;
+        if (!*natural) {
+            need += (*direction == BOTTOM)
+                ? (int32_t)global_state.config.jump_threshold
+                : -(int32_t)global_state.config.jump_threshold;
+        }
         reach = state->plane_y + offset;
         if ((*direction == BOTTOM) ? (reach < need) : (reach > need))
             return 0.0f;
