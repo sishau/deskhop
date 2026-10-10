@@ -64,8 +64,8 @@ static void side_display_px(uint16_t *width, uint16_t *height) {
    - natural handoff (same machine, no gap):  P1 main<->side, P2 side<->internal
    - direct cross-PC exit (target is a primary: exact absolute landing)
    - pulse entry (cross-PC into the side display: park on the local primary,
-     one relative pulse of exact size - exact when the OS pointer scale is
-     1:1, which is a hard requirement for every side-display path)
+     one relative pulse sized in px and converted to counts via the target
+     machine's calibrated pointer scale k - exact for any constant k)
    - corridor (crossing hides the cursor, exit reappears proportionally)     */
 
 typedef enum {
@@ -82,7 +82,6 @@ typedef struct {
     bool    cross;
     bool    horizontal;
     int     direction;   /* enum screen_pos_e: LEFT/RIGHT or TOP/BOTTOM */
-    bool    natural;     /* same-machine handoff: no gap, no threshold  */
     int32_t other;       /* non-crossing coordinate at the crossing point */
 } crossing_t;
 
@@ -228,8 +227,8 @@ static uint16_t side_k_pm(device_t *state) {
    the offset at which the (threshold) boundary is reached, or 0 = no
    crossing (wall, not reached, or blocked by a held mouse button). */
 static float axis_scan(device_t *state, plane_cell_e cell, bool horizontal,
-                       int32_t offset, bool *natural, int *direction) {
-    *natural = false;
+                       int32_t offset, int *direction) {
+    bool natural = false;
     if (offset == 0)
         return 0.0f;
 
@@ -237,9 +236,9 @@ static float axis_scan(device_t *state, plane_cell_e cell, bool horizontal,
 
     if (horizontal) {
         *direction = (offset < 0) ? LEFT : RIGHT;
-        if (!edge_policy(cell, *direction, natural))
+        if (!edge_policy(cell, *direction, &natural))
             return 0.0f;
-        if (!*natural && state->mouse_buttons)
+        if (!natural && state->mouse_buttons)
             return 0.0f;   /* no cross-PC jumps while dragging */
 
         /* Boundary x = 0: left column ends at -1, right column starts at 0.
@@ -249,7 +248,7 @@ static float axis_scan(device_t *state, plane_cell_e cell, bool horizontal,
            commanding it back) and mismatch the anchor by threshold/scale.
            Only gated cross-PC edges keep the jump_threshold margin. */
         need = (*direction == LEFT) ? -1 : 0;
-        if (!*natural) {
+        if (!natural) {
             need += (*direction == LEFT)
                 ? -(int32_t)global_state.config.jump_threshold
                 : (int32_t)global_state.config.jump_threshold;
@@ -259,15 +258,15 @@ static float axis_scan(device_t *state, plane_cell_e cell, bool horizontal,
             return 0.0f;
     } else {
         *direction = (offset < 0) ? TOP : BOTTOM;
-        if (!edge_policy(cell, *direction, natural))
+        if (!edge_policy(cell, *direction, &natural))
             return 0.0f;
-        if (!*natural && state->mouse_buttons)
+        if (!natural && state->mouse_buttons)
             return 0.0f;
 
         /* Boundary y = MAX / MAX+1 between the two rows; same natural/gated
            rule as the horizontal boundary above. */
         need = (*direction == BOTTOM) ? BOTTOM_ROW_MIN : MAX_SCREEN_COORD;
-        if (!*natural) {
+        if (!natural) {
             need += (*direction == BOTTOM)
                 ? (int32_t)global_state.config.jump_threshold
                 : -(int32_t)global_state.config.jump_threshold;
@@ -301,7 +300,7 @@ static crossing_t detect_and_update(device_t *state, mouse_values_t *values) {
     plane_cell_e cell = cell_of(state->plane_x, state->plane_y);
     output_t *current = &state->config.output[state->active_output];
     uint8_t reduce_speed = state->mouse_zoom ? MOUSE_ZOOM_SCALING_FACTOR : 0;
-    crossing_t c = {false, false, NONE, false, 0};
+    crossing_t c = {false, false, NONE, 0};
     int32_t ox, oy;
 
     if (cell == CELL_SIDE) {
@@ -332,18 +331,17 @@ static crossing_t detect_and_update(device_t *state, mouse_values_t *values) {
     state->mouse_buttons = values->buttons;
 
     if (!state->switch_lock && !state->gaming_mode) {
-        bool nat_x, nat_y;
         int dir_x = NONE, dir_y = NONE;
-        float tx = axis_scan(state, cell, true,  ox, &nat_x, &dir_x);
-        float ty = axis_scan(state, cell, false, oy, &nat_y, &dir_y);
+        float tx = axis_scan(state, cell, true,  ox, &dir_x);
+        float ty = axis_scan(state, cell, false, oy, &dir_y);
 
         if (tx > 0 && (ty <= 0 || tx <= ty)) {
             c.cross = true; c.horizontal = true;
-            c.direction = dir_x; c.natural = nat_x;
+            c.direction = dir_x;
             c.other = clamp_other(state->plane_y + (int32_t)(oy * tx), cell, true);
         } else if (ty > 0) {
             c.cross = true; c.horizontal = false;
-            c.direction = dir_y; c.natural = nat_y;
+            c.direction = dir_y;
             c.other = clamp_other(state->plane_x + (int32_t)(ox * ty), cell, false);
         }
     }
@@ -368,7 +366,7 @@ void output_mouse_report(mouse_report_t *report, device_t *state) {
 
 /* One relative report sliding the OS cursor across the arrangement boundary.
    The relative HID interface has 16-bit axes. Buttons forced to 0 to avoid
-   carrying press state across the switch, like the macOS workaround does. */
+   carrying press state across the switch. */
 static void send_relative_pulse(device_t *state, int16_t dx, int16_t dy) {
     mouse_report_t pulse = {.x = dx, .y = dy, .mode = RELATIVE, .buttons = 0};
     output_mouse_report(&pulse, state);
@@ -439,9 +437,9 @@ static void side_exit_to_internal(device_t *state, int32_t x) {  /* P1, BOTTOM *
 /* Cross-PC entries into the (relative) side display: park the target
    machine's cursor absolutely on its primary, then send one relative pulse
    sized to land exactly at the kept coordinate. All the math lives on the
-   mouse board - no inter-board coordinate exchange is needed. Exact when
-   the OS pointer scale is 1:1; otherwise the landing error scales with the
-   pulse size (the reason 1:1 is a hard requirement). */
+   mouse board - no inter-board coordinate exchange is needed. Pulses are
+   computed in px and converted to counts via the target machine's pointer
+   scale k, so landings are exact for any constant k (EPP must stay off). */
 
 static void pulse_entry_internal_to_side(device_t *state, int32_t x) {  /* P1, TOP */
     uint16_t aux_w, aux_h;

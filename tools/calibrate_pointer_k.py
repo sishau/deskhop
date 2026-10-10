@@ -174,8 +174,8 @@ def main():
     k = round((kx + ky) / 2 * 1000)
     print(f"  K = {k}")
     print()
-    print("把该值写入这台机器对应的配置（A=主机 / B=笔记本），")
-    print("例如主机：SIDE_POINTER_K_A 或 webconfig 字段。")
+    print("把该值写入这台机器的固件配置：webconfig API 字段 87（pointer_k_pm，")
+    print("千分比）。本机默认 1000；只有非 1:1 的机器需要设置。")
 
 
 if __name__ == "__main__":

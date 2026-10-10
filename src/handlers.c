@@ -415,11 +415,11 @@ void set_active_output(device_t *state, uint8_t new_output) {
  * ============  Layout Profile Routines  ============== *
  * ==================================================== */
 
-/* Apply a layout profile by swapping the screen counts of the two outputs.
-   HOST:   side display owned by A -> {A:2, B:1}, vertical A/B border
-   LAPTOP: side display owned by B -> {A:1, B:2}, horizontal A/B border
-   Both outputs return to their main screen. This is RAM-only state,
-   intentionally not stored in config_t (flash layout stays compatible). */
+/* Apply a layout profile: HOST = side display owned by A, LAPTOP = by B.
+   The v4 plane model derives all edge behavior from layout_profile directly;
+   the screen_count/screen_index/pos writes below are kept only so the
+   webconfig API view (fields 11/17/41/47) reflects the active profile.
+   This is RAM-only state, intentionally not stored in config_t. */
 void apply_layout_profile(device_t *state, uint8_t profile) {
     state->layout_profile = profile;
 
@@ -429,10 +429,6 @@ void apply_layout_profile(device_t *state, uint8_t profile) {
         output->screen_index = 1;
     }
 
-    /* v3: the main displays are index 1 on both outputs. Output A's extension
-       (the side display, index 2) hangs off the main display's LEFT edge in the
-       HOST profile (making 主显左缘↔副显右缘 an internal switch), and A has no
-       extension in LAPTOP. B.pos stays LEFT throughout. */
     state->config.output[OUTPUT_A].pos = (profile == LAYOUT_PROFILE_HOST) ? LEFT : RIGHT;
 
     state->relative_mouse = false;

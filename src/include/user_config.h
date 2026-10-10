@@ -203,8 +203,11 @@
  *
  * */
 
-#define OUTPUT_A_OS MACOS
-#define OUTPUT_B_OS LINUX
+/* Both machines run Windows - the screenlock hotkey (Right Ctrl + L) sends
+   Win+L. A MACOS value here would send Ctrl+Cmd+Q (= quit application) to
+   the host instead. */
+#define OUTPUT_A_OS WINDOWS
+#define OUTPUT_B_OS WINDOWS
 
 
 /**================================================== *
