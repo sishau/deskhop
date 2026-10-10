@@ -33,14 +33,11 @@
    makes the landing immune to +-PULSE_EDGE_MARGIN_PX of arrangement slop. */
 #define PULSE_EDGE_MARGIN_PX 7
 
-/* P2 side-display entry robustness. The park sits this many px left of the
-   shared corner so the upward crossing happens through solidly overlapping
-   columns instead of the single boundary pixel column, and the landing keeps
-   a buffer from the re-entry edge. The pulse itself is split into a burst of
-   small reports: the target machine's input stack has been measured to pass
-   streaming deltas faithfully while a single huge delta did not survive it
-   (k=1000 ledger tracking perfect, single -540-count pulse landing ~8px). */
-#define PARK_X_MARGIN_PX   64
+/* P2 side-display entry. The pulse itself is split into a burst of small
+   reports, paced to streaming speed (see PULSE_CHUNK_*): the target machine's
+   input stack has been measured to pass human-speed streaming deltas
+   faithfully while faster injections are distorted (a single -540-count
+   pulse landing ~8px; an unpaced 96k-counts/s burst landing a few px high). */
 #define PULSE_CHUNK_COUNTS 96
 
 /* Queue-task ticks (2 kHz) between burst chunks. Drained flat-out the burst
@@ -505,10 +502,11 @@ static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LE
     state->relative_mouse = true;
     rel_rem_x = rel_rem_y = 0;
 
-    /* Park the laptop cursor on the internal screen's top edge, PARK_X_MARGIN_PX
-       left of the shared corner (see the define comment). */
+    /* Park the laptop cursor at the internal screen's top-right corner - the
+       shared corner with the side display above it. The pulse is purely
+       vertical (dx=0), so the x column is kept exactly. */
     mouse_report_t park = {
-        .x = MAX_SCREEN_COORD - (int32_t)PARK_X_MARGIN_PX * MAX_SCREEN_COORD / aux_w,
+        .x = MAX_SCREEN_COORD,
         .y = 0,
         .mode = ABSOLUTE,
         .buttons = 0,
@@ -518,7 +516,7 @@ static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LE
     /* Pulse up across the stacked boundary, landing at the kept height - but
        never closer to the shared edge than the safety margin. Sized in px,
        converted to counts via the target OS pointer scale k, then emitted as
-       a burst of small reports (see PULSE_CHUNK_COUNTS). */
+       a paced burst of small reports (see PULSE_CHUNK_*). */
     uint16_t k = side_k_pm(state);
     int32_t dy_px = (int32_t)((int64_t)(y - MAX_SCREEN_COORD) * aux_h / MAX_SCREEN_COORD);
     if (dy_px > -(1 + PULSE_EDGE_MARGIN_PX))
@@ -531,10 +529,12 @@ static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LE
     state->pulse_wait = PULSE_CHUNK_PERIOD;
     state->pulse_left = counts;
 
-    /* Anchor the ledger where the burst actually lands: PARK_X_MARGIN_PX left
-       of the shared edge, proportional row. */
+    /* Anchor the ledger at the actual landing: the side display's right edge
+       column, proportional row. Landing on the shared edge keeps the usual
+       multi-monitor edge semantics - nudging right re-enters the main
+       display at the kept height. */
     set_plane_position(state,
-        -1 - (int32_t)PARK_X_MARGIN_PX * MAX_SCREEN_COORD / aux_w,
+        -1,
         MAX_SCREEN_COORD + (int32_t)((int64_t)dy_px * MAX_SCREEN_COORD / aux_h));
 }
 
