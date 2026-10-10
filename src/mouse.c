@@ -43,6 +43,14 @@
 #define PARK_X_MARGIN_PX   64
 #define PULSE_CHUNK_COUNTS 96
 
+/* Queue-task ticks (2 kHz) between burst chunks. Drained flat-out the burst
+   runs at ~96 counts per USB frame (~96k counts/s) - far beyond any human
+   flick and inside the regime the laptop's input stack distorts (a single
+   -540-count delta was eaten to ~8px; streaming-speed deltas are faithful).
+   96 counts / 4 ms = 24k counts/s, the proven-faithful regime; a full-height
+   pulse still completes in ~45 ms, imperceptible. */
+#define PULSE_CHUNK_PERIOD 8
+
 /* Fractional remainders of the exact virtual-coordinate accumulation on the
    relative side display (see detect_and_update). Bounded by +-side_px. */
 static int32_t rel_rem_x = 0, rel_rem_y = 0;
@@ -517,11 +525,11 @@ static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LE
         dy_px = -(1 + PULSE_EDGE_MARGIN_PX);
 
     int32_t counts = (int32_t)((int64_t)dy_px * 1000 / k);
-    while (counts) {
-        int16_t chunk = (int16_t)clamp_i32(counts, -PULSE_CHUNK_COUNTS, PULSE_CHUNK_COUNTS);
-        send_relative_pulse(state, 0, chunk);
-        counts -= chunk;
-    }
+
+    /* Hand the burst to the paced emitter (process_mouse_queue_task) instead
+       of queueing it flat-out: see PULSE_CHUNK_PERIOD. */
+    state->pulse_wait = PULSE_CHUNK_PERIOD;
+    state->pulse_left = counts;
 
     /* Anchor the ledger where the burst actually lands: PARK_X_MARGIN_PX left
        of the shared edge, proportional row. */
@@ -532,6 +540,11 @@ static void pulse_entry_main_to_side(device_t *state, int32_t y) {     /* P2, LE
 
 static void handle_crossing(device_t *state, plane_cell_e from, crossing_t *c) {
     bool host = (state->layout_profile == LAYOUT_PROFILE_HOST);
+
+    /* Any new crossing invalidates a still-running pulse burst - its ledger
+       anchor belonged to the previous entry and leftover chunks would only
+       pollute the fresh one. */
+    state->pulse_left = 0;
 
     if (c->horizontal) {
         if (c->direction == LEFT) {
@@ -679,12 +692,31 @@ void process_mouse_report(uint8_t *raw_report, int len, uint8_t itf, hid_interfa
  * Mouse Queue Section
  * ==================================================== */
 
+/* Emit one chunk of a pending pulse burst, paced to PULSE_CHUNK_PERIOD so the
+   injected speed stays inside the regime the target machine's input stack has
+   been measured to pass faithfully (see the define). */
+static void pulse_burst_tick(device_t *state) {
+    if (!state->pulse_left)
+        return;
+
+    if (++state->pulse_wait < PULSE_CHUNK_PERIOD)
+        return;
+    state->pulse_wait = 0;
+
+    int16_t chunk = (int16_t)clamp_i32(state->pulse_left, -PULSE_CHUNK_COUNTS, PULSE_CHUNK_COUNTS);
+    send_relative_pulse(state, 0, chunk);
+    state->pulse_left -= chunk;
+}
+
 void process_mouse_queue_task(device_t *state) {
     mouse_report_t report = {0};
 
     /* We need to be connected to the host to send messages */
     if (!state->tud_connected)
         return;
+
+    /* Advance a pending pulse burst (independent of the queue contents) */
+    pulse_burst_tick(state);
 
     /* Peek first, if there is anything there... */
     if (!queue_try_peek(&state->mouse_queue, &report))

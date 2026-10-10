@@ -167,6 +167,14 @@ typedef struct {
        whenever an ABSOLUTE report is submitted; RELATIVE reports wait it out
        so a park (ITF0) can never be overtaken by its pulse (ITF1). */
     uint8_t abs_settle;
+
+    /* Paced pulse burst: remaining counts of a park-and-pulse entry, emitted
+       one chunk per PULSE_CHUNK_PERIOD queue-task ticks. At full USB speed the
+       burst reaches ~96k counts/s, a regime some laptop input stacks distort
+       (streaming-speed deltas are measured faithful); pacing keeps it there.
+       Zero = idle. */
+    int32_t pulse_left;
+    uint8_t pulse_wait;
 } device_t;
 /*==============================================================================*/
 
