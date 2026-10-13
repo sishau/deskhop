@@ -33,6 +33,7 @@
 #![windows_subsystem = "windows"]
 
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::io::Write;
 
 // ========================= Configuration =========================
 
@@ -183,6 +184,43 @@ extern "system" {
     fn GlobalFree(h: Handle) -> Handle;
     fn GetModuleHandleW(name: *const u16) -> Handle;
     fn GetTickCount() -> u32;
+    fn GetLocalTime(st: *mut SystemTime);
+}
+
+// ========================= Debug logging (remove when stable) =========================
+
+#[repr(C)]
+struct SystemTime {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
+}
+
+fn log_line(msg: &str) {
+    let mut st = SystemTime {
+        year: 0, month: 0, day_of_week: 0, day: 0,
+        hour: 0, minute: 0, second: 0, milliseconds: 0,
+    };
+    unsafe { GetLocalTime(&mut st) };
+
+    // Log next to the exe; fall back to %TEMP% if that fails.
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("deskhop-text-channel.log")))
+        .unwrap_or_else(|| std::env::temp_dir().join("deskhop-text-channel.log"));
+
+    let line = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} {}\r\n",
+        st.year, st.month, st.day, st.hour, st.minute, st.second, st.milliseconds, msg
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(line.as_bytes());
+    }
 }
 
 #[link(name = "user32")]
@@ -495,29 +533,42 @@ fn clipboard_set_text(s: &str) -> bool {
 
 fn do_push() {
     let Some(h) = get_hid() else {
+        log_line("push: no HID device");
         return;
     };
     // Push the clipboard as-is: the user copies the text themselves, so this
     // is safe everywhere (an injected ^c would SIGINT remote shells over SSH).
     let Some(text) = clipboard_get_text().filter(|t| !t.is_empty()) else {
+        log_line("push: clipboard empty or non-text");
         return;
     };
-    if let Err(_) = push_text(h, &text) {
-        hid_invalidate();
+    match push_text(h, &text) {
+        Ok((n, trunc)) => log_line(&format!(
+            "push: {} bytes{}",
+            n,
+            if trunc { " (truncated)" } else { "" }
+        )),
+        Err(e) => {
+            log_line(&format!("push FAILED: {e}"));
+            hid_invalidate();
+        }
     }
 }
 
 fn do_pull() {
     let Some(h) = get_hid() else {
+        log_line("pull: no HID device");
         return;
     };
 
     match pull_text(h) {
-        Err(_) => {
+        Err(e) => {
+            log_line(&format!("pull FAILED: {e}"));
             hid_invalidate();
         }
-        Ok(None) => {}
+        Ok(None) => log_line("pull: buffer empty"),
         Ok(Some(text)) => {
+            log_line(&format!("pull: {} bytes -> clipboard", text.len()));
             // Clipboard only: pasting is left to the user, since terminals
             // disagree (^v vs Ctrl+Shift+V vs right-click) and mstsc may not
             // even deliver injected keys.
@@ -553,6 +604,7 @@ fn count_to_profile(count: u32) -> Option<u8> {
 fn kvm_check(hwnd: Handle) {
     let count = unsafe { GetSystemMetrics(SM_CMONITORS) } as u32;
     let Some(profile) = count_to_profile(count) else {
+        log_line(&format!("watcher: count={count} unusual topology, ignored"));
         return;
     };
 
@@ -561,12 +613,15 @@ fn kvm_check(hwnd: Handle) {
         .compare_exchange(0, count, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
+        log_line(&format!("watcher: baseline sample count={count}"));
         return;
     }
 
     if count == KVM_STABLE.load(Ordering::Relaxed) {
         // Spurious event or already in sync - cancel any pending candidate.
-        KVM_PENDING.store(0, Ordering::Relaxed);
+        if KVM_PENDING.swap(0, Ordering::Relaxed) != 0 {
+            log_line(&format!("watcher: candidate cancelled (count back to {count})"));
+        }
         unsafe { KillTimer(hwnd, KVM_TIMER_DEBOUNCE) };
         return;
     }
@@ -575,6 +630,11 @@ fn kvm_check(hwnd: Handle) {
 
     if KVM_PENDING.load(Ordering::Relaxed) != count {
         // New candidate: (re)start the debounce window.
+        log_line(&format!(
+            "watcher: candidate count={count} (stable={}), debounce {}ms",
+            KVM_STABLE.load(Ordering::Relaxed),
+            KVM_DEBOUNCE_MS
+        ));
         KVM_PENDING.store(count, Ordering::Relaxed);
         KVM_PENDING_AT.store(now, Ordering::Relaxed);
         unsafe { SetTimer(hwnd, KVM_TIMER_DEBOUNCE, KVM_DEBOUNCE_MS, 0) };
@@ -592,9 +652,15 @@ fn kvm_check(hwnd: Handle) {
     if let Some(h) = get_hid() {
         if send_packet(h, TC_LAYOUT_SELECT, &d) {
             KVM_STABLE.store(count, Ordering::Relaxed);
+            log_line(&format!(
+                "watcher: confirmed count={count} -> TC_LAYOUT_SELECT profile={profile} SENT OK"
+            ));
         } else {
             hid_invalidate();
+            log_line("watcher: TC_LAYOUT_SELECT send FAILED (hid invalidated, will retry)");
         }
+    } else {
+        log_line("watcher: no HID device open, send skipped (will retry)");
     }
     KVM_PENDING.store(0, Ordering::Relaxed);
     unsafe { KillTimer(hwnd, KVM_TIMER_DEBOUNCE) };
@@ -636,8 +702,14 @@ extern "system" fn wnd_proc(hwnd: Handle, msg: u32, wp: usize, lp: isize) -> isi
     unsafe {
         match msg {
             WM_HOTKEY => match wp {
-                1 => do_push(),
-                2 => do_pull(),
+                1 => {
+                    log_line("hotkey: Ctrl+Alt+U push");
+                    do_push()
+                }
+                2 => {
+                    log_line("hotkey: Ctrl+Alt+D pull");
+                    do_pull()
+                }
                 3 => PostQuitMessage(0),
                 _ => {}
             },
@@ -661,7 +733,7 @@ extern "system" fn wnd_proc(hwnd: Handle, msg: u32, wp: usize, lp: isize) -> isi
             }
 
             WM_DISPLAYCHANGE => {
-                // Display topology changed (KVM button press on the host).
+                log_line("event: WM_DISPLAYCHANGE");
                 kvm_check(hwnd);
             }
 
@@ -686,6 +758,7 @@ extern "system" fn wnd_proc(hwnd: Handle, msg: u32, wp: usize, lp: isize) -> isi
 
 fn main() {
     unsafe {
+        log_line("=== deskhop-text-channel start ===");
         let instance = GetModuleHandleW(std::ptr::null());
         let class_name = wide("DeskHopTextChannel");
 
