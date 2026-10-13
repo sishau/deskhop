@@ -14,7 +14,7 @@ cmake_minimum_required(VERSION 3.6)
 # u16 encoding: major * 1000 + minor * 10 + patch (see FIRMWARE_VERSION below).
 set(VERSION_MAJOR 0)
 set(VERSION_MINOR 80)
-set(VERSION_PATCH 5)
+set(VERSION_PATCH 6)
 
 ## Release Type Selection
 option(DH_DEBUG "Build a debug version" OFF)

@@ -32,6 +32,10 @@ enum tc_usb_msg_e {
     TC_USB_PUSH_BEGIN = 1, /* data[0..1] = total length, little endian    */
     TC_USB_PUSH_DATA  = 2, /* data[0] = seq, data[1..7] = 7 bytes of text */
     TC_USB_PULL_REQ   = 3, /* Restart the pull side, data ignored         */
+
+    /* Select the layout profile from the resident host tool. Idempotent:
+       a request matching the active profile is a no-op. */
+    TC_USB_LAYOUT_SELECT = 4, /* data[0] = target profile (0=HOST, 1=LAPTOP) */
 };
 
 /* Types used in GET_REPORT responses (same 12-byte packet layout). */

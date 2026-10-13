@@ -437,11 +437,10 @@ void apply_layout_profile(device_t *state, uint8_t profile) {
     state->relative_mouse = false;
 }
 
-/* Right Ctrl + M means "I just pressed the KVM button": flip the layout
-   profile and move the input to the side display's new owner (v2.1). */
-void layout_toggle_hotkey_handler(device_t *state, hid_keyboard_report_t *report) {
-    uint8_t new_profile = state->layout_profile ^ 1;
-
+/* Apply a profile and move the side display's ownership (HOST = output A,
+   LAPTOP = output B), then keep the other board in sync. Used by the
+   keyboard hotkey and by the USB command from the resident host tool. */
+void layout_profile_select(device_t *state, uint8_t new_profile) {
     apply_layout_profile(state, new_profile);
 
     /* The side display belongs to output A in the HOST profile, to output B in LAPTOP */
@@ -449,6 +448,12 @@ void layout_toggle_hotkey_handler(device_t *state, hid_keyboard_report_t *report
 
     /* Keep the other board in sync */
     send_value(new_profile, LAYOUT_SELECT_MSG);
+}
+
+/* Right Ctrl + M means "I just pressed the KVM button": flip the layout
+   profile and move the input to the side display's new owner (v2.1). */
+void layout_toggle_hotkey_handler(device_t *state, hid_keyboard_report_t *report) {
+    layout_profile_select(state, state->layout_profile ^ 1);
 }
 
 /* The other board toggled the layout profile, apply the same transform here */

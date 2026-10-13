@@ -71,3 +71,4 @@ void handle_write_fw_msg(uart_packet_t *, device_t *);
 
 void apply_layout_profile(device_t *, uint8_t);
 void set_active_output(device_t *, uint8_t);
+void layout_profile_select(device_t *, uint8_t);

@@ -10,6 +10,16 @@
 //                clipboard. Paste it yourself (^v, Ctrl+Shift+V, right-click).
 //   Ctrl+Alt+0 : exit
 //
+// KVM-state watcher (firmware v0.80.6+): the side display's owner is picked
+// with the KVM box button, which the firmware cannot see - but the host can:
+// pressing the button drops/raises the phantom display, so SM_CMONITORS
+// flips 2 <-> 1 (verified 2026-10-13). WM_DISPLAYCHANGE carries that change
+// event-driven; after a 1 s debounce the matching layout profile is sent to
+// the Pico as an absolute value (idempotent on the firmware side). A 5 s
+// reconcile timer is the safety net for lost events / resume-from-sleep.
+// Meaningful on the HOST machine only (the laptop always sees its phantom);
+// harmless there, since the count never changes.
+//
 // Right-click the tray icon for an Exit menu.
 //
 // Uses only hid.dll / setupapi.dll / user32 / kernel32 / shell32 through
@@ -22,7 +32,7 @@
 
 #![windows_subsystem = "windows"]
 
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 
 // ========================= Configuration =========================
 
@@ -37,6 +47,14 @@ const TC_PUSH_DATA: u8 = 2;  // data[0] = seq, data[1..8] = 7 bytes of text
 const TC_PULL_REQ: u8 = 3;   // restart the read side
 const TC_PULL_DATA: u8 = 5;  // data[0..7] = text, data[7] = 0x80|n on last chunk
 const TC_PULL_EMPTY: u8 = 0xFF;
+const TC_LAYOUT_SELECT: u8 = 4; // data[0] = target profile (0=HOST, 1=LAPTOP)
+
+// KVM watcher tuning
+const KVM_DEBOUNCE_MS: u32 = 1000;  // candidate count must hold this long
+const KVM_RECONCILE_MS: u32 = 5000; // safety-net poll for lost events
+const KVM_TIMER_DEBOUNCE: usize = 1;
+const KVM_TIMER_RECONCILE: usize = 2;
+const SM_CMONITORS: i32 = 80;
 
 // ========================= Win32 constants =========================
 
@@ -51,8 +69,10 @@ const INVALID_HANDLE: isize = -1;
 
 const WM_DESTROY: u32 = 0x0002;
 const WM_COMMAND: u32 = 0x0111;
+const WM_TIMER: u32 = 0x0113;
 const WM_RBUTTONUP: u32 = 0x0205;
 const WM_HOTKEY: u32 = 0x0312;
+const WM_DISPLAYCHANGE: u32 = 0x007E;
 const WM_APP: u32 = 0x8000;
 
 const MOD_CONTROL: u32 = 0x2;
@@ -162,6 +182,7 @@ extern "system" {
     fn GlobalUnlock(h: Handle) -> i32;
     fn GlobalFree(h: Handle) -> Handle;
     fn GetModuleHandleW(name: *const u16) -> Handle;
+    fn GetTickCount() -> u32;
 }
 
 #[link(name = "user32")]
@@ -188,6 +209,9 @@ extern "system" {
     fn DestroyMenu(menu: Handle) -> i32;
     fn SetForegroundWindow(hwnd: Handle) -> i32;
     fn GetCursorPos(pt: *mut Point) -> i32;
+    fn GetSystemMetrics(index: i32) -> i32;
+    fn SetTimer(hwnd: Handle, id: usize, ms: u32, proc: isize) -> usize;
+    fn KillTimer(hwnd: Handle, id: usize) -> i32;
 }
 
 #[link(name = "shell32")]
@@ -199,6 +223,12 @@ extern "system" {
 
 static HID: AtomicIsize = AtomicIsize::new(0); // cached device handle
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
+
+// KVM watcher state. STABLE=0 means "not synced yet": the first check after
+// startup sends whatever profile matches the observed count (idempotent).
+static KVM_STABLE: AtomicU32 = AtomicU32::new(0); // count the firmware was last told about
+static KVM_PENDING: AtomicU32 = AtomicU32::new(0); // candidate count, 0 = none
+static KVM_PENDING_AT: AtomicU32 = AtomicU32::new(0); // tick when the candidate first appeared
 
 // ========================= Helpers =========================
 
@@ -496,6 +526,80 @@ fn do_pull() {
     }
 }
 
+// ========================= KVM watcher =========================
+
+/// Monitor count -> layout profile. 2 = side display present = HOST (P1),
+/// 1 = only the real display = LAPTOP (P2). Verified 2026-10-13: the KVM
+/// button drops/raises the phantom display on the host, flipping SM_CMONITORS.
+fn count_to_profile(count: u32) -> Option<u8> {
+    match count {
+        2 => Some(0), // LAYOUT_PROFILE_HOST
+        1 => Some(1), // LAYOUT_PROFILE_LAPTOP
+        _ => None,    // unusual topology, stay out of the way
+    }
+}
+
+/// Evaluate the monitor count against the debounce state machine. Called on
+/// WM_DISPLAYCHANGE (event), the 1 s debounce timer and the 5 s reconcile
+/// timer. Sends the profile only once a candidate count has held steady for
+/// KVM_DEBOUNCE_MS, so source-switch transients (VCP glitches, HPD churn)
+/// are ignored. Absolute values keep manual hotkey toggles resolvable.
+///
+/// Change-driven by design: the tool runs on BOTH machines, but only the
+/// host ever sees the count flip (the laptop's phantom is permanent), so
+/// "send on change" makes the laptop side a silent no-op. Sending on a
+/// startup reading instead would let the laptop force OUTPUT_A ownership
+/// onto its own board - wrong. Startup therefore only samples the baseline.
+fn kvm_check(hwnd: Handle) {
+    let count = unsafe { GetSystemMetrics(SM_CMONITORS) } as u32;
+    let Some(profile) = count_to_profile(count) else {
+        return;
+    };
+
+    // Baseline sampling: observe only until the first actual change.
+    if KVM_STABLE
+        .compare_exchange(0, count, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        return;
+    }
+
+    if count == KVM_STABLE.load(Ordering::Relaxed) {
+        // Spurious event or already in sync - cancel any pending candidate.
+        KVM_PENDING.store(0, Ordering::Relaxed);
+        unsafe { KillTimer(hwnd, KVM_TIMER_DEBOUNCE) };
+        return;
+    }
+
+    let now = unsafe { GetTickCount() };
+
+    if KVM_PENDING.load(Ordering::Relaxed) != count {
+        // New candidate: (re)start the debounce window.
+        KVM_PENDING.store(count, Ordering::Relaxed);
+        KVM_PENDING_AT.store(now, Ordering::Relaxed);
+        unsafe { SetTimer(hwnd, KVM_TIMER_DEBOUNCE, KVM_DEBOUNCE_MS, 0) };
+        return;
+    }
+
+    // Same candidate as before - act if it has held long enough.
+    let since = now.wrapping_sub(KVM_PENDING_AT.load(Ordering::Relaxed));
+    if since < KVM_DEBOUNCE_MS {
+        return; // debounce timer will re-check
+    }
+
+    let mut d = [0u8; 8];
+    d[0] = profile;
+    if let Some(h) = get_hid() {
+        if send_packet(h, TC_LAYOUT_SELECT, &d) {
+            KVM_STABLE.store(count, Ordering::Relaxed);
+        } else {
+            hid_invalidate();
+        }
+    }
+    KVM_PENDING.store(0, Ordering::Relaxed);
+    unsafe { KillTimer(hwnd, KVM_TIMER_DEBOUNCE) };
+}
+
 // ========================= Tray =========================
 
 fn add_tray(hwnd: Handle) {
@@ -556,6 +660,17 @@ extern "system" fn wnd_proc(hwnd: Handle, msg: u32, wp: usize, lp: isize) -> isi
                 }
             }
 
+            WM_DISPLAYCHANGE => {
+                // Display topology changed (KVM button press on the host).
+                kvm_check(hwnd);
+            }
+
+            WM_TIMER => {
+                if wp == KVM_TIMER_DEBOUNCE || wp == KVM_TIMER_RECONCILE {
+                    kvm_check(hwnd);
+                }
+            }
+
             WM_DESTROY => {
                 remove_tray(hwnd);
                 PostQuitMessage(0);
@@ -604,6 +719,12 @@ fn main() {
         RegisterHotKey(hwnd, 1, mods, 0x55); // U
         RegisterHotKey(hwnd, 2, mods, 0x44); // D
         RegisterHotKey(hwnd, 3, mods, 0x30); // 0
+
+        // KVM watcher: periodic reconcile catches what the event path misses
+        // (events lost before window creation, resume from sleep). Startup
+        // only samples the baseline; the first actual count change triggers
+        // the first send (change-driven - see kvm_check).
+        SetTimer(hwnd, KVM_TIMER_RECONCILE, KVM_RECONCILE_MS, 0);
 
         let mut msg: Msg = std::mem::zeroed();
         while GetMessageW(&mut msg, 0, 0, 0) > 0 {

@@ -119,6 +119,18 @@ void tc_handle_usb_push(uart_packet_t *pkt) {
             tc_tx.offset = 0;
             break;
 
+        case TC_USB_LAYOUT_SELECT: {
+            /* The KVM-state watcher in the resident host tool reports the
+               side display's ownership via monitor count. Only act on an
+               actual change so manual hotkeys and repeats stay harmless. */
+            uint8_t profile = pkt->data[0];
+
+            if (profile <= LAYOUT_PROFILE_LAPTOP &&
+                global_state.layout_profile != profile)
+                layout_profile_select(&global_state, profile);
+            break;
+        }
+
         default:
             break;
     }
