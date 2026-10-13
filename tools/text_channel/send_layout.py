@@ -14,7 +14,9 @@ Usage:
                                          send it 5 times, 250 ms apart
 
 Notes:
-  - Idempotent: sending the profile the board already has is a no-op.
+  - v0.80.8+: sending the profile the board already has still re-announces
+    it to the peer, so you can use this to REPAIR a stale other board
+    (e.g. after a dropped sync): just send the profile that looks correct.
   - v0.80.7+ blinks the RECEIVING board's LED when the peer applies the
     sync, so watch the laptop-side Pico LED to confirm the sync landed.
   - If one shot fails to move the other board but --repeat 5 does, the

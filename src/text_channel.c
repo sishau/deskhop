@@ -125,9 +125,21 @@ void tc_handle_usb_push(uart_packet_t *pkt) {
                actual change so manual hotkeys and repeats stay harmless. */
             uint8_t profile = pkt->data[0];
 
-            if (profile <= LAYOUT_PROFILE_LAPTOP &&
-                global_state.layout_profile != profile)
+            if (profile > LAYOUT_PROFILE_LAPTOP)
+                break;
+
+            if (global_state.layout_profile != profile) {
                 layout_profile_select(&global_state, profile);
+            } else {
+                /* Local side already matches, but the peer may still be stale
+                   if it missed the original sync (UART TX queue drop). Send a
+                   re-announcement so a manual/watched resend can repair it;
+                   the receiving board applies idempotently and blinks. */
+                global_state.layout_resend_profile = profile;
+                global_state.layout_resend_left    = 4;
+                global_state.layout_resend_at      = 0;
+                send_value(profile, LAYOUT_SELECT_MSG);
+            }
             break;
         }
 
