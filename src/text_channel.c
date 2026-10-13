@@ -41,6 +41,12 @@ static tc_rx_state_t tc_rx;
 static tc_tx_state_t tc_tx;
 static uint8_t tc_buf[TC_BUF_SIZE];
 
+/* Diagnostics: how many TC_USB_LAYOUT_SELECT packets actually reached the
+   handler. A host tool reads this back via GET_REPORT (probe in
+   send_layout.py) before and after sending, so a stalled count proves the
+   packet never arrived and locates the fault at the USB layer. */
+static uint8_t tc_type4_count;
+
 /* --------------------------- Receiving side ------------------------------ */
 
 /* Set up a fresh transfer session. Supersedes any previous one. */
@@ -124,6 +130,7 @@ void tc_handle_usb_push(uart_packet_t *pkt) {
                side display's ownership via monitor count. Only act on an
                actual change so manual hotkeys and repeats stay harmless. */
             uint8_t profile = pkt->data[0];
+            tc_type4_count++;
 
             if (profile > LAYOUT_PROFILE_LAPTOP)
                 break;
@@ -156,8 +163,15 @@ uint16_t tc_get_report(uint8_t *buffer, uint16_t len) {
     uart_packet_t pkt = {.type = TC_USB_PULL_DATA};
 
     if (tc_tx.len == 0) {
-        /* Nothing buffered - tell the host there is nothing to pull. */
+        /* Nothing buffered - tell the host there is nothing to pull, and
+           piggyback board diagnostics on the (otherwise all-zero) data:
+           [0] layout_profile, [1] type=4 packets seen, [2] active_output,
+           [3] bit0 = config mode active, bits1.. = BOARD_ROLE. */
         pkt.type = TC_USB_PULL_EMPTY;
+        pkt.data[0] = global_state.layout_profile;
+        pkt.data[1] = tc_type4_count;
+        pkt.data[2] = global_state.active_output;
+        pkt.data[3] = (global_state.config_mode_active ? 1 : 0) | (BOARD_ROLE << 1);
     } else {
         /* Activity indicator while the pull side drains the buffer. */
         blink_led_onboard(&global_state);
