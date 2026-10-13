@@ -49,6 +49,10 @@ int main(void) {
         (saved_profile >> 4) == (PROFILE_SCRATCH_BASE >> 4) ? (saved_profile & 1)
                                                             : LAYOUT_PROFILE_HOST);
 
+    // Peer profile is unknown until the first heartbeat arrives (field 88).
+    // Static zero-init would fake "HOST" here, so mark it explicitly.
+    device->peer_profile = 0xFF;
+
     // Initial state, A is the default output
     set_active_output(device, OUTPUT_A);
 

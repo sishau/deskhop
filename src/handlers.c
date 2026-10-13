@@ -472,6 +472,12 @@ void layout_toggle_hotkey_handler(device_t *state, hid_keyboard_report_t *report
 
 /* The other board toggled the layout profile, apply the same transform here */
 void handle_layout_select_msg(uart_packet_t *packet, device_t *state) {
+    /* The UART only guarantees a valid checksum; a garbage profile byte would
+       corrupt the RAM-only layout state (screen counts, borders), so
+       whitelist the known values. */
+    if (packet->data[0] > LAYOUT_PROFILE_LAPTOP)
+        return;
+
     apply_layout_profile(state, packet->data[0]);
 
     /* Onboard LED flash: the receiving board has no webconfig view of its
