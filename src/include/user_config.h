@@ -105,8 +105,8 @@
 #define SIDE_DISPLAY_HEIGHT_PX 1080
 
 /* Default OS pointer scale in permille (1000 = 1 count = 1 px), applied to
-   both outputs (config v11, fields 23/53); measure the real value per machine
-   with tools/calibrate_pointer_k.py and set it via the webconfig page
+   both outputs (config v11, fields 23/53); calibrate the real value per
+   machine via behavioral bracketing and set it via the webconfig page
    (mirrored to both boards like every output field). */
 #define POINTER_K_PM 1000
 

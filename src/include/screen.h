@@ -49,10 +49,12 @@ typedef struct {
     uint8_t mouse_park_pos;    // Where the mouse goes after switch
 
     /* OS pointer scale (permille, 1000 = 1 count = 1 px) of the machine this
-       output belongs to, measured by tools/calibrate_pointer_k.py. Required
-       whenever that machine's pointer speed slider is not at 1:1 (EPP must
-       stay off). Used by the side display ledger and pulse sizing; both
-       boards carry both outputs' values in their mirrored config, so the
+       output belongs to, calibrated via behavioral bracketing (KVM-switch
+       back and forth and read back the resulting counts; injected-input
+       scripts measure a different path - see docs/screen-layout.md).
+       Required whenever that machine's pointer speed slider is not at 1:1
+       (EPP must stay off). Used by the side display ledger and pulse sizing;
+       both boards carry both outputs' values in their mirrored config, so the
        pulse sender looks up the target machine's k locally. */
     uint16_t pointer_k_pm;
 

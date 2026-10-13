@@ -42,9 +42,10 @@ static tc_tx_state_t tc_tx;
 static uint8_t tc_buf[TC_BUF_SIZE];
 
 /* Diagnostics: how many TC_USB_LAYOUT_SELECT packets actually reached the
-   handler. A host tool reads this back via GET_REPORT (probe in
-   send_layout.py) before and after sending, so a stalled count proves the
-   packet never arrived and locates the fault at the USB layer. */
+   handler. A host tool reads this back via GET_REPORT (PULL_EMPTY response,
+   bytes 4-6: profile / count / active_output) before and after sending, so a
+   stalled count proves the packet never arrived and locates the fault at the
+   USB layer. */
 static uint8_t tc_type4_count;
 
 /* --------------------------- Receiving side ------------------------------ */

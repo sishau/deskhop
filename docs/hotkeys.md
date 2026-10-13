@@ -1,6 +1,6 @@
-# DeskHop 热键速查（v0.80.6）
+# DeskHop 热键速查（v0.80.9）
 
-来源：`src/keyboard.c` 热键表 + `tools/text-channel/` 托盘 + `tools/text_channel_v2.ahk`。
+来源：`src/keyboard.c` 热键表。
 热键在接收键盘的 A 板（键盘板）检测，物理键盘上按键即可，两台机器都有效。
 
 ## 匹配规则
@@ -41,28 +41,11 @@
 | **右Shift + F12 + D** | **擦除配置**（两板恢复默认） | k/threshold/speed 等全部重置，慎用 |
 | **右Shift + F12 + Y** | 记录当前输出的切换边界 y 坐标 | 光标在屏幕上半=记上边界、下半=记下边界；对板同步 |
 
-## 文本通道热键（剪贴板跨机传输）
+## KVM 状态跟随（v0.80.6，无热键）
 
-### 主机（Rust 托盘 deskhop-text-channel.exe，常驻）
-
-| 热键 | 动作 |
-|---|---|
-| **Ctrl + Alt + U** | 推送当前剪贴板到对板 Pico（8KB 单发缓冲；需自己先复制） |
-| **Ctrl + Alt + D** | 从本机 Pico 拉取缓冲到剪贴板（自己再粘贴） |
-| **Ctrl + Alt + 0** | 退出托盘 |
-
-### 笔记本（AHK v2：tools/text_channel_v2.ahk）
-
-| 热键 | 动作 |
-|---|---|
-| **Ctrl + Alt + U** | 推送剪贴板（同上） |
-| **Ctrl + Alt + D** | 拉取到剪贴板 |
-| **Ctrl + Alt + 0** | 退出脚本 |
-
-### KVM 状态跟随（v0.80.6，无热键）
-
-主机托盘经 `WM_DISPLAYCHANGE` 事件监听显示器数量（2=主机归属 / 1=笔记本归属），
+主机托盘（tools/text-channel/）经 `WM_DISPLAYCHANGE` 事件监听显示器数量（2=主机归属 / 1=笔记本归属），
 自动向 Pico 发绝对值 profile 命令；1s 去抖 + 5s 对账兜底。与手动热键互不干扰。
+两端剪贴板热键（Ctrl+Alt+U/D/0，Rust 托盘与 AHK v2 各一份实现）见 tools/ 内各工具源码。
 
 ## 与系统热键的潜在冲突
 

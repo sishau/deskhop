@@ -220,7 +220,7 @@ enum screen_pos_e {
 };
 
 /* Which output owns the (physically shared) side display, defining where the
-   A/B border sits. See docs/screen-layout-proposal.md for the full design.
+   A/B border sits. See docs/screen-layout.md for the full design.
    HOST:   side display owned by output A, vertical A/B border   {A:2, B:1}
    LAPTOP: side display owned by output B, horizontal A/B border {A:1, B:2} */
 enum layout_profile_e {
