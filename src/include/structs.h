@@ -156,6 +156,19 @@ typedef struct {
     bool corridor_mode;      // v4: cursor inside the virtual corridor, no reports
     bool gaming_mode;        // True when gaming mode is on (relative passthru + lock)
     uint8_t layout_profile;  // Active layout profile (enum layout_profile_e), RAM only, never stored in flash
+
+    /* Layout profile sync reliability: the KVM watcher fires while the user
+       is already moving the mouse, and mouse-relay traffic can fill the UART
+       TX queue (queue_try_add drops on full) exactly when LAYOUT_SELECT_MSG
+       is queued. The sender repeats it a few times; receivers apply
+       idempotently, so duplicates are harmless. */
+    uint8_t  layout_resend_left;    // Remaining LAYOUT_SELECT_MSG retransmissions
+    uint8_t  layout_resend_profile; // Profile value to retransmit
+    uint32_t layout_resend_at;      // Earliest time (us) for the next retransmission
+
+    /* Peer's layout profile, carried by heartbeat packets (field 88, readonly).
+       0xFF = unknown (no heartbeat received yet, or peer older than v0.80.7). */
+    uint8_t peer_profile;
     bool config_mode_active; // True when config mode is active
     bool digitizer_active;   // True when digitizer Win/Mac workaround is active
 

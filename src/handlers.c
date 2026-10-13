@@ -374,6 +374,12 @@ void handle_response_byte_msg(uart_packet_t *packet, device_t *state) {
 void handle_heartbeat_msg(uart_packet_t *packet, device_t *state) {
     uint16_t other_running_version = packet->data16[0];
 
+    /* Mirror the peer's layout profile for the webconfig view (field 88).
+       Trust the byte only when the peer advertises v0.80.7+; older firmware
+       zero-fills the heartbeat, which would fake a HOST value. */
+    state->peer_profile
+        = (other_running_version >= 807) ? (uint8_t)packet->data16[3] : 0xFF;
+
     /* Compile-time kill-switch: never kick off a cross-device firmware copy */
     if (DISABLE_FW_UPGRADE)
         return;
@@ -443,11 +449,19 @@ void apply_layout_profile(device_t *state, uint8_t profile) {
 void layout_profile_select(device_t *state, uint8_t new_profile) {
     apply_layout_profile(state, new_profile);
 
+    /* Notify the other board BEFORE flipping the input routing: once
+       set_active_output() below hands the mouse over, relayed mouse traffic
+       can keep the UART TX queue full (queue_try_add drops on full), and
+       the watcher fires exactly when the user's hand is back on the mouse.
+       process_uart_tx_task repeats this a few more times; receivers apply
+       idempotently, so duplicates are harmless. */
+    state->layout_resend_profile = new_profile;
+    state->layout_resend_left    = 4;
+    state->layout_resend_at      = 0;
+    send_value(new_profile, LAYOUT_SELECT_MSG);
+
     /* The side display belongs to output A in the HOST profile, to output B in LAPTOP */
     set_active_output(state, (new_profile == LAYOUT_PROFILE_HOST) ? OUTPUT_A : OUTPUT_B);
-
-    /* Keep the other board in sync */
-    send_value(new_profile, LAYOUT_SELECT_MSG);
 }
 
 /* Right Ctrl + M means "I just pressed the KVM button": flip the layout
@@ -459,4 +473,8 @@ void layout_toggle_hotkey_handler(device_t *state, hid_keyboard_report_t *report
 /* The other board toggled the layout profile, apply the same transform here */
 void handle_layout_select_msg(uart_packet_t *packet, device_t *state) {
     apply_layout_profile(state, packet->data[0]);
+
+    /* Onboard LED flash: the receiving board has no webconfig view of its
+       own, so this is how the user verifies the sync actually arrived. */
+    blink_led_onboard(state);
 }

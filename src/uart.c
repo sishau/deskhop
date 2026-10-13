@@ -11,6 +11,12 @@
 
 #include "main.h"
 
+/* LAYOUT_SELECT_MSG retransmission (see layout_profile_select): the UART TX
+   queue can be saturated by relayed mouse traffic exactly when the KVM
+   watcher switches profiles, and queue_try_add drops on full. Repeat at a
+   slow cadence until it lands; apply_layout_profile is idempotent. */
+#define LAYOUT_RESEND_INTERVAL_US 250000
+
 /* ================================================== *
  * ===============  Sending Packets  ================ *
  * ================================================== */
@@ -43,6 +49,14 @@ void send_value(const uint8_t value, enum packet_type_e packet_type) {
 /* Process outgoing config report messages. */
 void process_uart_tx_task(device_t *state) {
     uart_packet_t packet = {0};
+
+    /* Retransmit LAYOUT_SELECT_MSG while repeats are pending. */
+    if (state->layout_resend_left
+        && (int32_t)(time_us_32() - state->layout_resend_at) >= 0) {
+        state->layout_resend_left--;
+        state->layout_resend_at = time_us_32() + LAYOUT_RESEND_INTERVAL_US;
+        send_value(state->layout_resend_profile, LAYOUT_SELECT_MSG);
+    }
 
     if (dma_channel_is_busy(state->dma_tx_channel))
         return;

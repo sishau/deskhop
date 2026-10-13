@@ -164,6 +164,7 @@ void heartbeat_output_task(device_t *state) {
         .data16 = {
             [0] = state->_running_fw.version,
             [2] = state->active_output,
+            [3] = state->layout_profile, /* v0.80.7: peer mirrors this as field 88 */
         },
     };
 
