@@ -1,12 +1,13 @@
-# 副显视频源软切方案（去 KVM 化）— 提案 v1
+# 副显视频源软切方案（去 KVM 化）— 提案 v2
 
-日期：2026-10-13。前置文档：screen-layout-proposal.md（v4 平面模型，本方案不改其任何几何）。
+日期：2026-10-13（v2：按 M0 实测定稿为**主机全责**架构）。前置文档：screen-layout-proposal.md（v4 平面模型，本方案不改其任何几何）。
 
 ## 1. 背景与目标
 
 - 现状：左屏（公共屏）经 HDMI/DP KVM 盒**按钮**切换归属，固件无法感知（信息论封口：副显归属比特不在任何可观测量中）。
-- 目标：**摘除 KVM 盒**，双机直连显示器两个输入；归属切换由常驻工具经 DDC/CI（VCP 0x60）完成，切换触发与 deskhop 的 profile（P1/P2）绑定。
+- 目标：**摘除 KVM 盒**，双机直连显示器两个输入；归属切换由**主机侧常驻工具**经 DDC/CI（VCP 0x60）+ Windows 拓扑完成，切换触发与 deskhop 的 profile（P1/P2）绑定。
 - 不变式：v4 平面模型、脉冲、k 全部不动——副显账本是虚拟的，不依赖任何一端 Windows 的显示器枚举。
+- **硬约束（M0 实测定案）**：笔记本装不了软件（疑似深信服管控，DDC 通道被其封死——VCP 读写在笔记本上对本机两路全部失败）；**工具只驻主机，笔记本零依赖**。
 
 ## 2. 实测结论（2026-10-12/13，KVM 已摘除）
 
@@ -20,42 +21,65 @@
 
 几何数据：主机副显 (-1920,3)-(0,1083)，笔记本副显 (0,-1080)-(1920,0)——均与 v4 假设一致（y=3 偏移由 8px 脉冲边距吸收）。注意此前两份 probe 曾被 KVM 盒污染（EDID 常驻），摘除后数据已重采。
 
-## 3. 架构
+### 2.1 M0 脚本实测补充（2026-10-13，tools/ddc_test/switch_source.py）
+
+| # | 测试 | 结果 | 判定 |
+|---|---|---|---|
+| C1 | 主机 to-laptop（DDC 17 → topo-external） | ✅ 全闭环 | 主机交出 OK |
+| C2 | 主机 to-pc（topo-extend 先行 → DDC 1） | ✅ 顺序修正后闭环 | **DDC 依赖活动路径**：拓扑摘除后该路 DDC 不可达，收回必须先恢复拓扑 |
+| C3 | 笔记本 DDC | VCP 读/写全灭（连本机两路都读不到） | ✗ 笔记本永不发起 DDC（疑似深信服封 dxva2 调用） |
+| C4 | 笔记本 topo-internal+数据库 | 应用后立即回滚（黑一下恢复） | ✗ 不可用 |
+| C5 | 笔记本 topo-internal-nodb | hr=87 | ✗ 拓扑标志必须配 SDC_USE_DATABASE_CURRENT |
+| C6 | 笔记本内板连接器类型 | tech=0x80000000（厂商高位标记），非标准 LVDS/eDP | 路径识别需按主显原点匹配 |
+| C7 | 路径级 SetDisplayConfig（保留主显路径） | VALIDATE 通过但 apply 一律 hr=87 | ✗ 暂不可用，留档 |
+| C8 | 显示器自动源检测 | 开启：信号消失→自动跳有信号的源；信号出现不抢当前源 | 交接可由"交出方收缩拓扑"驱动 |
+
+**连接器实描**：右屏 = GPU DVI 口（DVI→HDMI 线）；左屏 = GPU DP 口（DP→VGA）。GPU 连接器类型 ≠ 监视器输入类型。
+
+**结论：主机侧双向切换已端到端闭环（to-laptop/to-pc 反复验证），去 KVM 核心目标达成。笔记本侧"非归属时摘除自己桌面的幻影"放弃程序化方案**（零安装缓解见 §3.4）。
+
+## 3. 架构（v2：主机全责）
 
 ### 3.1 组件
 
-1. **常驻工具**（Rust，扩展现有 `tools/text-channel/` 托盘 exe，双机各一份，零新第三方依赖）：
-   - **DDC/CI**：`dxva2.dll` 的 `GetVCPFeature/SetVCPFeature`（Win32 API，非"依赖"）；
-   - **拓扑管理**：`SetDisplayConfig`——归属方 `SDC_TOPOLOGY_EXTEND`，非归属方主机 `SDC_TOPOLOGY_SINGLE`（幸存屏=primary=主显）/ 笔记本 `SDC_TOPOLOGY_INTERNAL`；
+1. **主机侧常驻工具**（Rust，扩展现有 `tools/text-channel/` 托盘 exe，**只驻主机**，零新第三方依赖）：
+   - **DDC/CI**：`dxva2.dll` 的 `GetVCPFeature/SetVCPFeature`（导出名实测为 `GetVCPFeatureAndVCPFeatureReply`）；
+   - **拓扑管理**：`SetDisplayConfig`——交出= `SDC_TOPOLOGY_EXTERNAL|SDC_USE_DATABASE_CURRENT`（保留右屏真屏、摘除幻影），收回= 先 `SDC_TOPOLOGY_EXTEND|...` 恢复路径再操作；**笔记本侧不做任何拓扑动作**；
    - **状态源**：轮询本机 deskhop 的只读字段 **89 = layout_profile**（vendor HID，与 webconfig 同协议，1 Hz）；启动时即查并校正一次；本地热键手动兜底；
    - 工具以 profile 为唯一真源做幂等动作：profile 未变时不重复发 DDC/拓扑（防抖）。
 2. **固件**：预期最小改动——验证 profile 热键变更是否已同步对板（v4 几何依赖双板一致，应已有机制）；字段 89 已随 805 存在，无新增。
+3. **笔记本**：零安装、零常驻。非归属期的幻影屏用 §3.4 的手动缓解。
 
-### 3.2 切换时序
-
-因 A4（双向应答），DDC 发送端放宽为"**旧归属方发送交出命令**"（约定取确定性，而非被迫）：
+### 3.2 切换时序（全部由主机工具执行）
 
 ```
 P1→P2（副显交笔记本）:
-  profile 变为 P2（热键）→ 两机工具各自轮询到
-  主机工具: SetVCPFeature(0x60, 17)   ← 监视器切 HDMI（此刻主机仍是活动源，A3 已实证）
-  主机工具: SetDisplayConfig(SINGLE)  ← 摘掉幻影 DISPLAY2
-  笔记本工具: SetDisplayConfig(EXTEND) ← HDMI 上真实点亮（HPD 恒在，无等待）
+  profile 变为 P2（热键）→ 主机工具轮询到
+  主机工具: SetVCPFeature(0x60, 17)        ← DDC 切 HDMI（活动源直接写，A3 实证）
+  主机工具: SetDisplayConfig(EXTERNAL|DB)  ← 主机收缩单屏；VGA 信号消失后
+                                              显示器自动源检测兜底跳 HDMI（C8）
 
 P2→P1（副显交主机）:
   profile 变为 P1
-  笔记本工具: SetVCPFeature(0x60, 1)  ← 切回 VGA
-  笔记本工具: SetDisplayConfig(INTERNAL)
-  主机工具: SetDisplayConfig(EXTEND)  ← 重新挂载 DISPLAY2
+  主机工具: SetDisplayConfig(EXTEND|DB)    ← 先恢复 VGA 路径（幻影路复活）
+  主机工具: 等 ~1s 路径就绪
+  主机工具: SetVCPFeature(0x60, 1)         ← DDC 切回 VGA（活动/幻影路均可写，A4/C2）
 ```
 
-双向对称，无握手依赖（各自独立轮询同一 profile 真源，幂等收敛）；切换黑屏 1–2s 仅发生在 DDC 命令生效瞬间。
+单一执行者、单一真源、幂等收敛；切换黑屏 1–2s 仅发生在 DDC 命令生效瞬间。**没有笔记本侧参与，无两机竞态。**
 
 ### 3.3 启动与异常
 
-- 工具启动：查字段 89 → 按当前 profile 校正本机拓扑（**不发** DDC——避免与另一端抢；显示器断电重上电若回默认输入，由"另一端下一次 profile 切换"或手动热键纠正）；
-- 手动热键：工具本地热键 = 临时翻转 profile（走 deskhot 现有 profile 热键），工具随之动作——单一真源不变；
-- 休眠/恢复：恢复后工具重查字段 89 并幂等校正。
+- 工具启动：查字段 89 → 按当前 profile 校正（拓扑 + 必要的 DDC）；
+- 手动热键：临时翻转 profile（走 deskhop 现有 profile 热键），工具随之动作——单一真源不变；
+- 休眠/恢复、显示器断电重上电：工具重查字段 89 幂等校正；显示器回默认输入由下次 profile 切换或热键纠正。
+
+### 3.4 笔记本幻影屏缓解（零安装，非归属期）
+
+按代价从低到高，用户自选：
+1. **接受幻影**：把笔记本桌面里幻影屏拖到远离主工作区的位置，减少窗口误入；
+2. **Win+P 手动**：交出后笔记本按 Win+P →"仅电脑屏幕"（若不回滚则最省心；M0 实测同 API 路径会回滚，但 UI 路径值得一试）；
+3. **关显示器 OSD 自动信号源 + Win+P**：若 C4 的回滚根因是"内屏独占瞬间 HDMI 信号消失→显示器自动跳源→HPD 抖动→Windows 恢复扩展"，关掉自动跳源后可能站住。代价：交接兜底（自动跳源）失效，全程依赖主机 DDC——主机双向 DDC 已实证可用，可接受。
 
 ## 4. 文件级改动清单
 
@@ -63,9 +87,9 @@ P2→P1（副显交主机）:
 - `src/handlers.c` / `src/keyboard.c`：验证 profile 热键的对板同步（若缺则加一条 UART 消息，~15 行）；
 - `webconfig/`、`src/protocol.c`：无改动（字段 89 已在 805）。
 
-**常驻工具（`tools/text-channel/`，增量 ~600-800 行）**
+**常驻工具（`tools/text-channel/`，增量 ~400-600 行，主机 only）**
 - `src/ddc.rs`（新）：Get/SetVCPFeature 封装 + 0x60 常量与映射（1/17）；
-- `src/topology.rs`（新）：SetDisplayConfig 封装（EXTEND/SINGLE/INTERNAL）；
+- `src/topology.rs`（新）：SetDisplayConfig 封装（EXTERNAL/EXTEND + DATABASE_CURRENT，时序顺序固定）；
 - `src/profile_watch.rs`（新）：字段 89 轮询（复用现有 vendor HID 收发代码）+ 幂等动作状态机；
 - `src/main.rs`：装配 + 托盘菜单（当前 profile 显示、手动切换）。
 
@@ -75,22 +99,23 @@ P2→P1（副显交主机）:
 
 | 风险 | 概率 | 影响 | 缓解 |
 |---|---|---|---|
-| 笔记本侧 DDC 物理路径未验证（A4 均为主机侧操作） | 低 | P2→P1 切换失灵 | 笔记本装 ControlMyMonitor 复测；失败则约定"主机全责发送"（主机作为非活动源已被 A4 实证可发） |
-| `SDC_TOPOLOGY_SINGLE` 在主机上幸存屏选错 | 低 | 主显被摘 | 启动后校验 primary；异常回退 `ChangeDisplaySettingsEx` 零尺寸 DEVMODE 路线 |
-| 显示器断电重上电回默认输入 | 中 | 归属与输入错位 | 手动热键/下次 profile 切换纠正；或 OSD 关闭自动源 |
+| ~~笔记本侧 DDC 未验证~~ → 已实证：笔记本 DDC 全灭（C3） | 确定 | 无（架构已改为主机全责） | 无需缓解 |
+| 显示器断电重上电回默认输入 | 中 | 归属与输入错位 | 工具启动/轮询幂等校正；下次 profile 切换纠正 |
 | Windows 拓扑记忆与工具抢状态 | 低 | 中 | 工具幂等 + profile 单一真源；手动 Win+P 会被下一次轮询校正 |
 | profile 双板同步缺口 | 低 | 双板几何错乱 | M1 阶段固件验证项（v4 既有依赖） |
 | 切换黑屏 1–2s | 确定 | 轻微 | 仅 profile 切换时发生，接受 |
 | 窗口位置重排 | 确定 | 轻微 | Windows 按 topology 记忆窗口，比物理拔插温和 |
+| 笔记本幻影屏窗口误入 | 确定 | 中（仅笔记本使用体验） | §3.4 三档缓解；程序化方案已放弃（C3/C4/C7） |
 
 ## 6. 测试清单
 
-- **P0**：笔记本侧 DDC 发送复测（填 A4 的另一半）；端到端 P1↔P2（热键触发，双机拓扑 + 输入源联动正确）；
-- **P1**：开机启动校正；显示器断电重上电场景；休眠恢复；
+- ~~P0：笔记本侧 DDC 发送复测~~（已关闭：C3 实证不可用，架构改主机全责）；
+- **P0**：端到端 P1↔P2（profile 热键触发，主机工具自动完成 DDC + 拓扑，反复验证）；
+- **P1**：开机启动校正；显示器断电重上电场景；休眠恢复；§3.4 缓解方案试用；
 - **P2**：与文本通道（剪贴板）并发；快速连续切换的防抖。
 
 ## 7. 阶段划分
 
-- **M1**：工具 MVP——手动触发 DDC + 拓扑（无固件改动，验证端到端可行性）；
+- **M1**：工具 MVP——主机侧手动触发 DDC + 拓扑（`switch_source.py` 的 to-laptop/to-pc 逻辑 Rust 化，无固件改动）；
 - **M2**：profile 轮询联动 + 启动校正 + 防抖状态机；
 - **M3**：固件 profile 同步验证/补齐 + 托盘 UI 收尾。
